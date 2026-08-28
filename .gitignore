@@ -213,3 +213,12 @@ tests/*.log
 data/
 .pulse.lock
 web.log
+
+# Local runtime data outside repo (defensive)
+pulse-data/
+
+# Local debug artifacts
+repro_*.png
+repro_dialog.py
+fileselector.png
+页面显示bug复现.png

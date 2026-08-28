@@ -27,6 +27,7 @@ class Paper(Base):
     downloaded = Column(Boolean, default=False)
     summarized = Column(Boolean, default=False)
     summary = Column(Text)
+    source = Column(String(20), default="arxiv")
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -51,6 +52,7 @@ class Paper(Base):
             "downloaded": self.downloaded,
             "summarized": self.summarized,
             "summary": self.summary,
+            "source": self.source or "arxiv",
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

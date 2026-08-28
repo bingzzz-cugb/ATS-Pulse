@@ -5,6 +5,8 @@ Category service - 分类解释服务
 from arxiv_pulse.constants import get_all_categories
 
 _CATEGORY_NAMES = {
+    "IEEE TGRS": ("IEEE 地球科学与遥感学报", "IEEE TGRS"),
+    "Science": ("Science 刊", "Science"),
     "cs.AI": ("人工智能", "Artificial Intelligence"),
     "cs.CL": ("计算语言学", "Computation and Language"),
     "cs.CR": ("密码学与安全", "Cryptography and Security"),

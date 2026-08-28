@@ -26,7 +26,7 @@ const i18nZh = {
         back: '上一步'
     },
     home: {
-        title: 'arXiv Pulse',
+        title: 'ATS Pulse',
         subtitle: '智能学术文献追踪与分析系统',
         searchPlaceholder: '输入 arXiv ID、关键词或自然语言描述搜索论文...',
         searchBtn: '搜索',
@@ -45,6 +45,8 @@ const i18nZh = {
         never: '从未',
         noPapers: '暂无论文',
         noPapersHint: '点击"更新"获取最新文献',
+        noMatch: '没有匹配的论文',
+        clearSearch: '清除搜索',
         syncNow: '立即同步',
         latestSync: '最近同步',
         daysAgo: '天前',
@@ -177,7 +179,7 @@ const i18nZh = {
         updateKey: '更新'
     },
     setup: {
-        welcome: '欢迎使用 arXiv Pulse',
+        welcome: '欢迎使用 ATS Pulse',
         step: '步骤',
         aiConfig: '配置 AI',
         selectFields: '选择研究领域',

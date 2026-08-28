@@ -26,7 +26,7 @@ const i18nEn = {
         back: 'Back'
     },
     home: {
-        title: 'arXiv Pulse',
+        title: 'ATS Pulse',
         subtitle: 'Intelligent Academic Literature Tracking & Analysis System',
         searchPlaceholder: 'Enter arXiv ID, keywords or natural language...',
         searchBtn: 'Search',
@@ -45,6 +45,8 @@ const i18nEn = {
         never: 'Never',
         noPapers: 'No papers yet',
         noPapersHint: 'Click "Update" to fetch latest papers',
+        noMatch: 'No matching papers',
+        clearSearch: 'Clear search',
         syncNow: 'Sync Now',
         latestSync: 'Latest Sync',
         daysAgo: 'days ago',
@@ -177,7 +179,7 @@ const i18nEn = {
         updateKey: 'Update'
     },
     setup: {
-        welcome: 'Welcome to arXiv Pulse',
+        welcome: 'Welcome to ATS Pulse',
         step: 'Step',
         aiConfig: 'Configure AI',
         selectFields: 'Select Research Fields',

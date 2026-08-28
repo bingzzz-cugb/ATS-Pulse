@@ -6,8 +6,7 @@ const usePaperStore = defineStore('paper', () => {
     const loadingController = ref(null);
     const updatingRecent = ref(false);
     const recentLogs = ref([]);
-    const recentDays = ref('7');
-    const recentNeedSync = ref(true);
+    const recentDays = ref('1');
     const recentSelectedIds = ref([]);
     const recentSearchQuery = ref('');
     const recentSearching = ref(false);
@@ -16,7 +15,10 @@ const usePaperStore = defineStore('paper', () => {
     
     const recentTotalCount = ref(0);
     const recentLoadingMore = ref(false);
-    const recentSelectedCategories = ref([]);
+    // 与 configStore.recentCategories 保持同一数据源（弹窗确认时写入）
+    const configStore = useConfigStore();
+    const recentSelectedCategories = computed(() => configStore.recentCategories);
+    const recentSources = ref(['arxiv', 'tgrs', 'science']);
     
     const homeQuery = ref('');
     const homeSearching = ref(false);
@@ -306,7 +308,6 @@ const usePaperStore = defineStore('paper', () => {
                                 loadingTotal.value = data.total;
                             } else if (data.type === 'done') {
                                 recentTotalCount.value = data.db_total || recentPapers.value.length;
-                                recentNeedSync.value = data.need_sync || false;
                                 if (recentPapers.value.length === 0) {
                                     recentLogs.value.push({ type: 'info', message: '暂无数据，请先同步论文' });
                                 }
@@ -328,24 +329,30 @@ const usePaperStore = defineStore('paper', () => {
     }
     
     async function updateRecentPapers(configStore) {
+        if (recentSources.value.length === 0) {
+            ElementPlus.ElMessage.error(configStore?.currentLang === 'zh' ? '请选择更新来源' : 'Please select at least one source');
+            return;
+        }
         updatingRecent.value = true;
         recentLogs.value = [];
         recentOriginalPapers.value = [];
         recentSearchQuery.value = '';
         recentPapers.value = [];
         recentTotalCount.value = 0;
-        
+
         try {
             const params = new URLSearchParams({
                 days: recentDays.value,
-                limit: configStore.settingsConfig.recent_papers_limit || 50,
-                need_sync: recentNeedSync.value
+                limit: configStore.settingsConfig.recent_papers_limit || 50
             });
-            
-            if (recentSelectedCategories.value.length > 0) {
-                params.set('categories', recentSelectedCategories.value.join(','));
+
+            // 默认关注 CV；手动选了领域则用所选
+            const cats = recentSelectedCategories.value.length > 0 ? recentSelectedCategories.value : ['cs.CV'];
+            params.set('categories', cats.join(','));
+            if (recentSources.value && recentSources.value.length > 0) {
+                params.set('sources', recentSources.value.join(','));
             }
-            
+
             const response = await API.papers.recentUpdate(params.toString());
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -369,7 +376,6 @@ const usePaperStore = defineStore('paper', () => {
                                 recentPapers.value.push(data.paper);
                             } else if (data.type === 'done') {
                                 recentTotalCount.value = data.total || recentPapers.value.length;
-                                recentNeedSync.value = false;
                                 recentLogs.value.push({ type: 'success', message: configStore?.currentLang === 'zh' ? '更新完成' : 'Update completed' });
                             } else if (data.type === 'error') {
                                 recentLogs.value.push({ type: 'error', message: data.message });
@@ -427,6 +433,10 @@ const usePaperStore = defineStore('paper', () => {
     }
     
     async function searchRecentPapers(configStore) {
+        if (loadingRecent.value || updatingRecent.value) {
+            ElementPlus.ElMessage.info(configStore?.currentLang === 'zh' ? '正在加载或更新，请稍后再搜索' : 'Loading in progress, please wait before searching');
+            return;
+        }
         if (!recentSearchQuery.value.trim()) {
             resetRecentSearch();
             return;
@@ -646,9 +656,9 @@ const usePaperStore = defineStore('paper', () => {
     
     return {
         recentPapers, loadingRecent, loadingProgress, loadingTotal, loadingController,
-        updatingRecent, recentLogs, recentDays, recentNeedSync, recentSelectedIds,
+        updatingRecent, recentLogs, recentDays, recentSelectedIds,
         recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers,
-        recentTotalCount, recentLoadingMore,
+        recentTotalCount, recentLoadingMore, recentSources,
         homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds, homeController, homeLogsContainer, homeUserScrolledUp,
         searchQuery, searching, searchLogs, searchResults, searchSelectedIds,
         paperCart, showCart, cartExportLoading, cartPosition, cartPanelRef, cartZIndex,

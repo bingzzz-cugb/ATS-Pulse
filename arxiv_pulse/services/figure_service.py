@@ -6,6 +6,7 @@ import logging
 import re
 import ssl
 import urllib.request
+from urllib.parse import urljoin
 
 from arxiv_pulse.core import Database
 from arxiv_pulse.models import FigureCache
@@ -46,6 +47,7 @@ def get_first_figure_url(arxiv_id: str, use_cache: bool = True) -> str | None:
 
         req = urllib.request.Request(url, headers={"User-Agent": "arXiv-Pulse/1.0"})
         response = urllib.request.urlopen(req, timeout=10, context=context)
+        final_url = response.geturl()
         html_content = response.read().decode("utf-8", errors="ignore")
 
         figure_pattern = r'<figure[^>]*>.*?<img[^>]+src=["\']([^"\']+)["\'][^>]*>.*?</figure>'
@@ -53,7 +55,7 @@ def get_first_figure_url(arxiv_id: str, use_cache: bool = True) -> str | None:
 
         if figure_matches:
             first_img_src = figure_matches[0]
-            result = _normalize_image_url(first_img_src, url)
+            result = _normalize_image_url(first_img_src, final_url)
             if use_cache:
                 _figure_cache[arxiv_id] = result
                 try:
@@ -134,7 +136,7 @@ def get_first_figure_url(arxiv_id: str, use_cache: bool = True) -> str | None:
         image_candidates.sort(key=lambda x: x["score"], reverse=True)
         best_image = image_candidates[0]
 
-        result = _normalize_image_url(best_image["src"], url)
+        result = _normalize_image_url(best_image["src"], final_url)
         if use_cache:
             _figure_cache[arxiv_id] = result
             try:
@@ -149,26 +151,14 @@ def get_first_figure_url(arxiv_id: str, use_cache: bool = True) -> str | None:
 
 
 def _normalize_image_url(img_src: str, base_url: str) -> str:
-    """标准化图片URL：处理相对路径"""
+    """标准化图片URL：按浏览器相对路径解析规则处理
+
+    arXiv HTML 页内的图片 src 是相对路径（如 '2608.27456v1/HKCase.png'），
+    页面 URL 本身不带尾斜杠，浏览器会按"父目录"解析为
+    https://arxiv.org/html/2608.27456v1/HKCase.png，手写拼接容易弄错，必须用 urljoin。
+    """
     if img_src.startswith("http"):
         return img_src
-
-    arxiv_id_match = re.search(r"/html/([^/]+)$", base_url)
-    arxiv_id = arxiv_id_match.group(1) if arxiv_id_match else ""
-
-    if img_src.startswith("/"):
-        if img_src.startswith("/html/"):
-            path_without_html = img_src[6:]
-            return f"https://arxiv.org/html/{arxiv_id}/{path_without_html}"
-        return f"https://arxiv.org{img_src}"
-
-    if img_src.startswith("./"):
-        img_src = img_src[2:]
-
-    if not base_url.endswith("/"):
-        base_url = base_url + "/"
-
-    if img_src.startswith("/"):
-        img_src = img_src[1:]
-
-    return base_url + img_src
+    if img_src.startswith("//"):
+        return "https:" + img_src
+    return urljoin(base_url, img_src)

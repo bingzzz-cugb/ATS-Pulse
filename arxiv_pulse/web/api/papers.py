@@ -22,6 +22,43 @@ from arxiv_pulse.web.dependencies import get_db
 router = APIRouter()
 
 
+def _build_source_cond(source_list: list[str] | None, category_list: list[str] | None = None):
+    """按来源构建 SQLAlchemy 过滤条件；doi 期刊按 categories 精确匹配，arXiv 可附领域过滤"""
+    from sqlalchemy import and_, or_
+
+    from arxiv_pulse.crawler.publisher import PUBLISHERS
+
+    conds = []
+    if source_list and "arxiv" in source_list:
+        if category_list:
+            cat_conds = []
+            for cat in category_list:
+                cat_conds.append(Paper.categories.contains(cat))
+                cat_conds.append(Paper.primary_category.contains(cat))
+            conds.append(and_(Paper.source == "arxiv", or_(*cat_conds)))
+        else:
+            conds.append(Paper.source == "arxiv")
+    if source_list:
+        for pub in PUBLISHERS:
+            if pub["key"] in source_list:
+                conds.append(and_(Paper.source == "doi", Paper.categories == pub["categories"]))
+    return or_(*conds) if conds else None
+
+
+def _paper_matches_source(paper, source_list: list[str] | None) -> bool:
+    """纯 Python 判断论文是否属于勾选来源（用于缓存在内存过滤）"""
+    if not source_list:
+        return True
+    if paper.source == "arxiv":
+        return "arxiv" in source_list
+    if paper.source == "doi":
+        from arxiv_pulse.crawler.publisher import PUBLISHERS
+
+        return any(pub["key"] in source_list and paper.categories == pub["categories"]
+                   for pub in PUBLISHERS)
+    return False
+
+
 def parse_arxiv_id(query: str) -> str | None:
     """Parse arXiv ID from various formats"""
     q = query.strip()
@@ -67,21 +104,18 @@ async def get_recent_papers(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     categories: str | None = Query(None, description="Comma-separated category codes"),
+    sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
 ):
-    """Get recent papers with pagination and optional category filter"""
+    """Get recent papers with pagination and optional category/source filter"""
+    source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+    category_list = [c.strip() for c in categories.split(",")] if categories else None
     with get_db().get_session() as session:
         cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
         query = session.query(Paper).filter(Paper.published >= cutoff)
 
-        if categories:
-            from sqlalchemy import or_
-
-            cat_list = [c.strip() for c in categories.split(",")]
-            conditions = []
-            for cat in cat_list:
-                conditions.append(Paper.categories.contains(cat))
-                conditions.append(Paper.primary_category.contains(cat))
-            query = query.filter(or_(*conditions))
+        source_cond = _build_source_cond(source_list, category_list)
+        if source_cond is not None:
+            query = query.filter(source_cond)
 
         total = query.count()
         papers = query.order_by(Paper.published.desc()).offset(offset).limit(limit).all()
@@ -97,8 +131,11 @@ async def get_recent_papers(
 
 
 @router.get("/recent/cache")
-async def get_recent_cache():
+async def get_recent_cache(
+    sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
+):
     """Get cached recent papers (instant load)"""
+    source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
     db = get_db()
     cache = db.get_recent_cache()
 
@@ -119,6 +156,7 @@ async def get_recent_cache():
         papers = session.query(Paper).filter(Paper.id.in_(paper_ids)).all()
         id_to_paper = {p.id: p for p in papers}
         ordered_papers = [id_to_paper[pid] for pid in paper_ids if pid in id_to_paper]
+        ordered_papers = [p for p in ordered_papers if _paper_matches_source(p, source_list)]
         result = [enhance_paper_data(p, session) for p in ordered_papers]
 
     return {
@@ -131,8 +169,11 @@ async def get_recent_cache():
 
 
 @router.get("/recent/cache/stream")
-async def get_recent_cache_stream():
+async def get_recent_cache_stream(
+    sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
+):
     """SSE: Get cached recent papers with progress"""
+    source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
 
     async def event_generator():
         import asyncio
@@ -145,12 +186,18 @@ async def get_recent_cache_stream():
             return
 
         paper_ids = cache.get("paper_ids", [])
-        total = len(paper_ids)
-        db_total = cache.get("total_count", total)
-
         if not paper_ids:
             yield sse_event("done", {"total": 0, "db_total": 0, "cached": True})
             return
+
+        with db.get_session() as session:
+            papers = session.query(Paper).filter(Paper.id.in_(paper_ids)).all()
+            id_to_paper = {p.id: p for p in papers}
+            ordered = [id_to_paper[pid] for pid in paper_ids if pid in id_to_paper]
+            ordered = [p for p in ordered if _paper_matches_source(p, source_list)]
+
+        total = len(ordered)
+        db_total = cache.get("total_count", total)
 
         yield sse_event(
             "start",
@@ -164,19 +211,12 @@ async def get_recent_cache_stream():
         await asyncio.sleep(0.01)
 
         with db.get_session() as session:
-            papers = session.query(Paper).filter(Paper.id.in_(paper_ids)).all()
-            id_to_paper = {p.id: p for p in papers}
-
-            for i, pid in enumerate(paper_ids, 1):
-                if pid in id_to_paper:
-                    paper = id_to_paper[pid]
-                    enhanced = enhance_paper_data(paper, session)
-                    yield sse_event("result", {"paper": enhanced, "index": i, "total": total})
-                else:
-                    yield sse_event("progress", {"index": i, "total": total})
+            for i, paper in enumerate(ordered, 1):
+                enhanced = enhance_paper_data(paper, session)
+                yield sse_event("result", {"paper": enhanced, "index": i, "total": total})
                 await asyncio.sleep(0.01)
 
-        yield sse_event("done", {"total": total, "db_total": db_total, "cached": True})
+        yield sse_event("done", {"total": total, "db_total": total, "cached": True})
 
     return sse_response(event_generator)
 
@@ -198,11 +238,34 @@ async def get_recent_cache_status():
     }
 
 
+# 活跃的更新任务注册表：task_id -> {"value": True}（被取消标记）
+_ACTIVE_UPDATE_TASKS: dict[str, dict] = {}
+
+
+def _register_update_task(task_id: str) -> dict:
+    flag = {"value": False}
+    _ACTIVE_UPDATE_TASKS[task_id] = flag
+    return flag
+
+
+def _unregister_update_task(task_id: str) -> None:
+    _ACTIVE_UPDATE_TASKS.pop(task_id, None)
+
+
+@router.post("/recent/update-cancel")
+async def cancel_recent_update():
+    """标记所有正在运行的近期更新任务取消"""
+    for flag in _ACTIVE_UPDATE_TASKS.values():
+        flag["value"] = True
+    return {"success": True, "cancelled": len(_ACTIVE_UPDATE_TASKS)}
+
+
 @router.post("/recent/update")
 async def update_recent_papers(
     days: int = Query(7, ge=1, le=30),
     need_sync: bool = Query(True),
     categories: str | None = Query(None, description="Comma-separated category codes"),
+    sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
     limit: int | None = Query(None, ge=1, le=200, description="Override config limit"),
 ):
     """SSE endpoint: sync -> query -> cache recent papers"""
@@ -217,6 +280,7 @@ async def update_recent_papers(
         task_id = str(uuid.uuid4())
 
         category_list = [c.strip() for c in categories.split(",")] if categories else []
+        source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else []
         query_limit = limit or Config.RECENT_PAPERS_LIMIT
         sync_years = Config.YEARS_BACK
 
@@ -224,6 +288,13 @@ async def update_recent_papers(
             task = SyncTask(id=task_id, task_type="recent_update", status="pending")
             session.add(task)
             session.commit()
+
+        cancelled_flag = _register_update_task(task_id)
+
+        if not source_list:
+            _unregister_update_task(task_id)
+            yield sse_event("log", {"message": "请选择更新来源"})
+            return
 
         yield sse_event("log", {"message": "开始更新最近论文..."})
         await asyncio.sleep(0.1)
@@ -245,31 +316,63 @@ async def update_recent_papers(
                     task.message = "正在同步新论文..."
                     session.commit()
 
-            yield sse_event("log", {"message": "正在同步新论文..."})
-            await asyncio.sleep(0.1)
-
             try:
-                from arxiv_pulse.crawler import ArXivCrawler
+                if "arxiv" in source_list:
+                    yield sse_event("log", {"message": "正在同步 arXiv 论文..."})
+                    await asyncio.sleep(0.1)
 
-                crawler = ArXivCrawler()
-                queries = Config.SEARCH_QUERIES
+                    from arxiv_pulse.crawler import ArXivCrawler
 
-                for i, query in enumerate(queries, 1):
-                    query_short = query[:50] + "..." if len(query) > 50 else query
-                    yield sse_event("log", {"message": f"[{i}/{len(queries)}] 同步: {query_short}"})
+                    crawler = ArXivCrawler()
+                    queries = Config.SEARCH_QUERIES
+
+                    for i, query in enumerate(queries, 1):
+                        if cancelled_flag["value"]:
+                            _unregister_update_task(task_id)
+                            yield sse_event("log", {"message": "同步已取消"})
+                            return
+                        query_short = query[:50] + "..." if len(query) > 50 else query
+                        yield sse_event("log", {"message": f"[{i}/{len(queries)}] 同步: {query_short}"})
+                        await asyncio.sleep(0.05)
+
+                        try:
+                            result = await asyncio.to_thread(
+                                crawler.sync_query, query=query, years_back=sync_years, force=False
+                            )
+                            total_added += result.get("new_papers", 0)
+                        except Exception as e:
+                            yield sse_event("log", {"message": f"  同步出错: {str(e)[:80]}"})
+
+                    yield sse_event("log", {"message": f"arXiv 同步完成，新增 {total_added} 篇论文"})
+                    await asyncio.sleep(0.1)
+                else:
+                    yield sse_event("log", {"message": "未勾选 arXiv，跳过 arXiv 同步"})
                     await asyncio.sleep(0.05)
-
-                    try:
-                        result = crawler.sync_query(query=query, years_back=sync_years, force=False)
-                        total_added += result.get("new_papers", 0)
-                    except Exception as e:
-                        yield sse_event("log", {"message": f"  同步出错: {str(e)[:80]}"})
-
-                yield sse_event("log", {"message": f"同步完成，新增 {total_added} 篇论文"})
-                await asyncio.sleep(0.1)
 
             except Exception as e:
                 yield sse_event("log", {"message": f"同步失败: {str(e)[:100]}"})
+                await asyncio.sleep(0.05)
+
+            # 同步非 arXiv 期刊（只同步勾选的，支持取消）
+            pub_keys = [k for k in source_list if k != "arxiv"]
+            if pub_keys:
+                try:
+                    from arxiv_pulse.crawler.publisher import sync_all_publishers
+
+                    yield sse_event("log", {"message": "同步期刊论文..."})
+                    await asyncio.sleep(0.05)
+                    pub_result = await asyncio.to_thread(
+                        sync_all_publishers, days_back=7, pub_keys=pub_keys,
+                        cancel_check=lambda: cancelled_flag["value"],
+                    )
+                    if cancelled_flag["value"]:
+                        _unregister_update_task(task_id)
+                        yield sse_event("log", {"message": "同步已取消"})
+                        return
+                    total_added += pub_result.get("new", 0)
+                    yield sse_event("log", {"message": f"期刊同步完成，新增 {pub_result.get('new', 0)} 篇"})
+                except Exception as e:
+                    yield sse_event("log", {"message": f"期刊同步出错: {str(e)[:100]}"})
         else:
             yield sse_event("log", {"message": "跳过同步，直接查询数据库"})
             await asyncio.sleep(0.1)
@@ -281,14 +384,9 @@ async def update_recent_papers(
             cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
             query = session.query(Paper).filter(Paper.published >= cutoff)
 
-            if category_list:
-                from sqlalchemy import or_
-
-                conditions = []
-                for cat in category_list:
-                    conditions.append(Paper.categories.contains(cat))
-                    conditions.append(Paper.primary_category.contains(cat))
-                query = query.filter(or_(*conditions))
+            source_cond = _build_source_cond(source_list, category_list)
+            if source_cond is not None:
+                query = query.filter(source_cond)
 
             total_count = query.count()
             papers = query.order_by(Paper.published.desc()).limit(query_limit).all()
@@ -297,14 +395,14 @@ async def update_recent_papers(
         yield sse_event("log", {"message": f"找到 {total_count} 篇论文，加载前 {len(papers)} 篇"})
         await asyncio.sleep(0.1)
 
-        db.set_recent_cache(days_back=days, paper_ids=paper_ids, total_count=total_count)
-        yield sse_event("log", {"message": "缓存已更新"})
-        await asyncio.sleep(0.1)
-
         summarized_count = 0
         figure_count = 0
 
         for i, paper in enumerate(papers):
+            if cancelled_flag["value"]:
+                _unregister_update_task(task_id)
+                yield sse_event("log", {"message": "更新已取消"})
+                return
             if not paper.summarized:
                 yield sse_event("log", {"message": f"[{i + 1}/{len(papers)}] 总结论文 {paper.arxiv_id}..."})
                 await asyncio.sleep(0.05)
@@ -337,6 +435,11 @@ async def update_recent_papers(
                 task.completed_at = datetime.now(UTC).replace(tzinfo=None)
                 session.commit()
 
+        # 全部处理完成后才写缓存——取消时会提前 return，不会留下过期缓存
+        db.set_recent_cache(days_back=days, paper_ids=paper_ids, total_count=total_count)
+        yield sse_event("log", {"message": "缓存已更新"})
+        await asyncio.sleep(0.1)
+
         yield sse_event(
             "done",
             {
@@ -347,6 +450,8 @@ async def update_recent_papers(
                 "figures": figure_count,
             },
         )
+
+        _unregister_update_task(task_id)
 
     return sse_response(event_generator)
 

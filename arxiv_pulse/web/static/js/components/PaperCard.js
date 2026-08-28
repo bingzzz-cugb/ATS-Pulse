@@ -45,7 +45,7 @@ const PaperCardTemplate = `
         </div>
         
         <div v-if="paper.figure_url" class="paper-figure">
-            <img :src="paper.figure_url" @click="openImage(paper.figure_url)" />
+            <img :src="paper.figure_url" @click="openImage(paper.figure_url)" @error="onFigureError" />
         </div>
         
         <div v-if="paper.methodology" class="methodology-section">
@@ -67,7 +67,7 @@ const PaperCardTemplate = `
     
     <div class="paper-actions">
         <el-button size="small" text type="primary" @click="openArxiv(paper.arxiv_id)">
-            <el-icon><Promotion /></el-icon> {{ t('paper.arxiv') }}
+            <el-icon><Promotion /></el-icon> {{ sourceLabel }}
         </el-button>
         <el-button size="small" text type="primary" @click="downloadPDF(paper.arxiv_id)">
             <el-icon><Download /></el-icon> {{ t('paper.pdf') }}
@@ -107,13 +107,27 @@ const PaperCardSetup = (props) => {
     const toggleExpand = () => {
         const wasExpanded = expanded.value;
         expanded.value = !expanded.value;
-        
+
         if (wasExpanded && cardRef.value) {
             setTimeout(() => {
                 cardRef.value.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 50);
         }
     };
+
+    const onFigureError = (e) => {
+        if (e && e.target) e.target.style.display = 'none';
+    };
+
+    const sourceLabel = computed(() => {
+        const p = props.paper;
+        if (p.source === 'doi') {
+            if (p.categories === 'IEEE TGRS') return 'TGRS';
+            if (p.categories === 'Science') return 'Science';
+            return 'DOI';
+        }
+        return t('paper.arxiv');
+    });
     
     const formatDate = (dateStr) => {
         if (!dateStr) return '';
@@ -202,10 +216,20 @@ const PaperCardSetup = (props) => {
     };
     
     const openArxiv = (arxivId) => {
+        const paper = props.paper || {};
+        if (paper.source === 'doi') {
+            window.open(paper.pdf_url || `https://doi.org/${arxivId}`, '_blank');
+            return;
+        }
         window.open(`https://arxiv.org/abs/${arxivId}`, '_blank');
     };
-    
+
     const downloadPDF = (arxivId) => {
+        const paper = props.paper || {};
+        if (paper.source === 'doi') {
+            window.open(paper.pdf_url || `https://doi.org/${arxivId}`, '_blank');
+            return;
+        }
         window.open(`https://arxiv.org/pdf/${arxivId}.pdf`, '_blank');
     };
     
@@ -357,9 +381,9 @@ const PaperCardSetup = (props) => {
         elements.push({ type: 'divider', y: y });
         y += 20 * scale;
         
-        elements.push({ type: 'text', text: `arXiv: ${props.paper.arxiv_id}`, font: `${12 * scale}px sans-serif`, color: '#909399', y: y });
+        elements.push({ type: 'text', text: `${props.paper.source === 'doi' ? 'DOI' : 'arXiv'}: ${props.paper.arxiv_id}`, font: `${12 * scale}px sans-serif`, color: '#909399', y: y });
         y += 24 * scale;
-        elements.push({ type: 'text', text: 'arXiv Pulse', font: `bold ${13 * scale}px Georgia, serif`, color: '#c9a227', y: y });
+        elements.push({ type: 'text', text: 'ATS Pulse', font: `bold ${13 * scale}px Georgia, serif`, color: '#c9a227', y: y });
         y += 14 * scale;
         elements.push({ type: 'text', text: 'github.com/kYangLi/arXiv-Pulse', font: `${10 * scale}px sans-serif`, color: '#b0b0b0', y: y });
         
@@ -418,5 +442,5 @@ const PaperCardSetup = (props) => {
         return props.paper.category_explanation_en || props.paper.category_explanation || '';
     });
     
-    return { expanded, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, downloadPDF, openImage, downloadCard, analyzePaper, t, isZh, categoryExplanation };
+    return { expanded, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, downloadPDF, openImage, downloadCard, analyzePaper, onFigureError, t, isZh, categoryExplanation, sourceLabel };
 };

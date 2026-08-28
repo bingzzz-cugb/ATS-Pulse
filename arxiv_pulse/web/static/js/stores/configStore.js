@@ -48,7 +48,7 @@ const useConfigStore = defineStore('config', () => {
     const tempSelectedFields = ref([]);
     const fieldSearchQuery = ref('');
     const fieldSelectorExpanded = ref({});
-    const recentCategories = ref([]);
+    const recentCategories = ref(['cs.CV']);
     const fieldAdvancedMode = ref(false);
     const advancedQueriesText = ref('');
     
