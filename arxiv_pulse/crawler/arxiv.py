@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import arxiv
+from sqlalchemy.exc import IntegrityError
 from tqdm import tqdm
 
 from arxiv_pulse.core import Config, Database
@@ -12,6 +13,14 @@ from arxiv_pulse.models import Paper
 from arxiv_pulse.utils import output
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_id(entry_id: str) -> str:
+    """从 arXiv entry_id 提取裸 ID（去掉版本号），与 Paper.from_arxiv_entry 入库格式保持一致"""
+    arxiv_id = entry_id.split("/")[-1]
+    if "v" in arxiv_id:
+        arxiv_id = arxiv_id.split("v")[0]
+    return arxiv_id
 
 
 class ArXivCrawler:
@@ -83,7 +92,7 @@ class ArXivCrawler:
         """Filter out papers already in database"""
         new_papers = []
         for paper in papers:
-            arxiv_id = paper.entry_id.split("/")[-1]
+            arxiv_id = _normalize_id(paper.entry_id)
             if not self.db.paper_exists(arxiv_id):
                 new_papers.append(paper)
             else:
@@ -97,13 +106,16 @@ class ArXivCrawler:
         saved_papers = []
         for paper in tqdm(papers, desc="Saving papers"):
             try:
-                arxiv_id = paper.entry_id.split("/")[-1]
+                arxiv_id = _normalize_id(paper.entry_id)
                 if self.db.paper_exists(arxiv_id):
                     continue
 
                 paper_obj = Paper.from_arxiv_entry(paper, search_query)
                 self.db.add_paper(paper_obj)
                 saved_papers.append(paper_obj)
+
+            except IntegrityError:
+                continue
 
             except Exception as e:
                 output.error(
