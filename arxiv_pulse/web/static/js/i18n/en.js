@@ -57,6 +57,9 @@ const i18nEn = {
         syncNewPapers: 'Sync from arXiv',
         yearsBack: 'Years Back',
         filterFields: 'Filter Fields',
+        customRange: 'Custom range',
+        dateRangeStart: 'Start date',
+        dateRangeEnd: 'End date',
         loading: 'Loading papers...',
         aiReading: 'AI is reading and understanding papers, please wait...',
         searchInPage: 'Search',
@@ -244,7 +247,15 @@ const i18nEn = {
         bookmarked: 'Marked',
         analyze: 'Analyze',
         addToCollection: 'Collection',
-        removeFromCollection: 'Remove'
+        removeFromCollection: 'Remove',
+        original: 'Original',
+        openExternal: 'Open in new tab',
+        openArxiv: 'Open on arXiv',
+        noSelection: 'Select papers first'
+    },
+    pdf: {
+        loading: 'Loading PDF...',
+        loadFailed: 'Failed to load PDF. Try opening it in a new tab.'
     },
     time: {
         justNow: 'Just now',

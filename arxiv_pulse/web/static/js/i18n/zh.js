@@ -57,6 +57,9 @@ const i18nZh = {
         syncNewPapers: '从arXiv同步',
         yearsBack: '回溯年数',
         filterFields: '筛选领域',
+        customRange: '自定义日期',
+        dateRangeStart: '开始日期',
+        dateRangeEnd: '结束日期',
         loading: '正在加载论文数据...',
         aiReading: 'AI 正在阅读并理解文献，请耐心等待...',
         searchInPage: '搜索',
@@ -244,7 +247,15 @@ const i18nZh = {
         bookmarked: '已暂存',
         analyze: '分析',
         addToCollection: '论文集',
-        removeFromCollection: '移除'
+        removeFromCollection: '移除',
+        original: '原文',
+        openExternal: '新标签打开',
+        openArxiv: '在 arXiv 打开',
+        noSelection: '请先在论文列表中选中论文'
+    },
+    pdf: {
+        loading: 'PDF 加载中...',
+        loadFailed: 'PDF 加载失败，请尝试在新标签中打开'
     },
     time: {
         justNow: '刚刚',
