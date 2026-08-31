@@ -60,7 +60,10 @@ const PaperPdfPanelSetup = (props, { emit }) => {
     resetLoading();
     watch(() => props.currentArxivId, resetLoading);
     onBeforeUnmount(() => clearTimeout(loadTimer));
-    const pdfSrc = computed(() => `/api/papers/${props.currentArxivId}/pdf`);
+    const pdfSrc = computed(() => {
+        const file = `/api/papers/${props.currentArxivId}/pdf`;
+        return `/vendor/pdfjs/web/viewer.html?file=${encodeURIComponent(file)}`;
+    });
     const currentPaper = computed({
         get: () => props.currentArxivId,
         set: (v) => emit('update:current', v)
