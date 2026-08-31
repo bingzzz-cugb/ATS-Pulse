@@ -149,25 +149,35 @@
                 </div>
                 
                 <div class="home-search-box">
-                    <el-input 
-                        v-model="homeQuery" 
-                        :placeholder="t('home.searchPlaceholder')"
-                        size="large"
-                        @keyup.enter="handleHomeSearch"
-                        clearable
-                    >
-                        <template #prefix>
-                            <el-icon :class="{ 'searching': homeSearching }"><Search /></el-icon>
-                        </template>
-                        <template #suffix v-if="homeSearching">
-                            <div class="search-stop-btn" @click="stopHomeSearch" :title="currentLang === 'zh' ? '停止搜索' : 'Stop search'">
-                                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
-                                    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-                                    <rect x="8" y="8" width="8" height="8" rx="1.5"/>
-                                </svg>
-                            </div>
-                        </template>
-                    </el-input>
+                    <div class="home-search-inner">
+                        <el-input
+                            v-model="homeQuery"
+                            :placeholder="t('home.searchPlaceholder')"
+                            size="large"
+                            @keyup.enter="handleHomeSearch"
+                            clearable
+                        >
+                            <template #prefix>
+                                <el-icon :class="{ 'searching': homeSearching }"><Search /></el-icon>
+                            </template>
+                            <template #suffix v-if="homeSearching">
+                                <div class="search-stop-btn" @click="stopHomeSearch" :title="currentLang === 'zh' ? '停止搜索' : 'Stop search'">
+                                    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+                                        <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+                                        <rect x="8" y="8" width="8" height="8" rx="1.5"/>
+                                    </svg>
+                                </div>
+                            </template>
+                        </el-input>
+                        <el-button
+                            type="primary"
+                            class="home-search-btn"
+                            :loading="homeSearching"
+                            @click="handleHomeSearch"
+                        >
+                            {{ t('common.search') }}
+                        </el-button>
+                    </div>
                 </div>
                     
                     <div v-if="homeLogs.length > 0" class="logs-container home-logs" ref="homeLogsContainerRef" @scroll="handleHomeLogsScroll" style="margin-top: 16px; max-height: 100px; max-width: 680px; width: 100%;">
@@ -232,6 +242,18 @@
                                 <el-select v-model="recentDays" :placeholder="t('papers.timeRange')" style="width: 120px;">
                                     <el-option v-for="item in daysOptions" :key="item.value" :label="item.label" :value="item.value" />
                                 </el-select>
+                                <el-date-picker
+                                    v-if="recentDays === 'custom'"
+                                    v-model="recentDateRange"
+                                    type="daterange"
+                                    range-separator="-"
+                                    :start-placeholder="t('papers.dateRangeStart')"
+                                    :end-placeholder="t('papers.dateRangeEnd')"
+                                    value-format="YYYY-MM-DD"
+                                    :disabled-date="(dt) => dt.getTime() > Date.now()"
+                                    style="width: 260px; margin-left: 8px;"
+                                >
+                                </el-date-picker>
                                 <el-tooltip 
                                     :content="getSelectedFieldsTooltip()" 
                                     placement="bottom"
@@ -822,6 +844,7 @@
     <script src="js/components/SettingsDrawer.js"></script>
     <script src="js/components/CollectionDialogs.js"></script>
     <script src="js/components/ChatWidget.js"></script>
+    <script src="js/components/PaperPdfPanel.js"></script>
     <script>
         // Vue and Pinia APIs already exposed globally by earlier scripts
         const { createApp } = Vue;
@@ -882,7 +905,7 @@
                 // paperStore properties
                 const { 
                     stats, fieldStats, recentPapers, loadingRecent, loadingProgress, loadingTotal, loadingController,
-                    updatingRecent, recentLogs, recentDays, recentSources,
+                    updatingRecent, recentLogs, recentDays, recentDateRange, recentSources,
                     recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers,
                     recentTotalCount, recentLoadingMore,
                     homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds, homeController, homeUserScrolledUp,
@@ -1201,7 +1224,8 @@
                         { value: '3', label: isZh ? '3 天' : '3 days' },
                         { value: '7', label: isZh ? '7 天' : '7 days' },
                         { value: '14', label: isZh ? '14 天' : '14 days' },
-                        { value: '30', label: isZh ? '30 天' : '30 days' }
+                        { value: '30', label: isZh ? '30 天' : '30 days' },
+                        { value: 'custom', label: isZh ? '自定义日期' : 'Custom range' }
                     ];
                 });
 
@@ -1597,6 +1621,11 @@
                         loadingRecent.value = false;
                         return;
                     }
+                    // 自定义日期区间不走缓存，请点击「更新」触发区间同步与查询
+                    if (recentDays.value === 'custom') {
+                        loadingRecent.value = false;
+                        return;
+                    }
                     loadingRecent.value = true;
                     loadingProgress.value = 0;
                     loadingTotal.value = 0;
@@ -1668,6 +1697,21 @@
                     }
                 }
 
+                function recentTimeQuery(params) {
+                    if (recentDays.value === 'custom') {
+                        if (recentDateRange.value?.length === 2) {
+                            params.set('date_from', recentDateRange.value[0]);
+                            params.set('date_to', recentDateRange.value[1]);
+                        } else {
+                            // 未完成日期选择时回退到默认 7 天范围
+                            params.set('days', '7');
+                        }
+                    } else {
+                        params.set('days', recentDays.value);
+                    }
+                    return params;
+                }
+
                 async function updateRecentPapers() {
                     if (recentSources.value.length === 0) {
                         ElementPlus.ElMessage.error(currentLang.value === 'zh' ? '请选择更新来源' : 'Please select at least one source');
@@ -1690,9 +1734,9 @@
                     const myGen = ++recentLoadGen;
                     try {
                         const params = new URLSearchParams({
-                            days: recentDays.value,
                             limit: settingsConfig.value.recent_papers_limit || 50
                         });
+                        recentTimeQuery(params);
                         params.set('sources', recentSources.value.join(','));
                         const cats = recentCategories.value.length > 0
                             ? recentCategories.value
@@ -1756,10 +1800,10 @@
 
                     try {
                         const params = new URLSearchParams({
-                            days: recentDays.value,
                             limit: settingsConfig.value.recent_papers_limit || 50,
                             offset: recentPapers.value.length
                         });
+                        recentTimeQuery(params);
                         params.set('sources', recentSources.value.join(','));
                         
                         const cats = recentCategories.value.length > 0 
@@ -2671,7 +2715,7 @@
                     currentPage, stats, fieldStats, expandedGroups, recentPapers, searchResults, collections,
                     loadingRecent, updatingRecent, recentLogs, loadingProgress, loadingTotal, stopLoading,
                     recentPage, RECENT_PAGE_SIZE, pagedPapers, onRecentPageChange,
-                    recentDays, recentCategories,
+                    recentDays, recentDateRange, recentCategories,
                     categoryOptions, daysOptions, syncYearOptions, initYearOptions, syncYearsBackOptions, searchDaysOptions, aiLanguageOptions,
                     searching, searchQuery, searchDays, searchLogs,
                     syncStatus, syncing, syncLogs, syncYearsBack, syncForce,
@@ -2778,6 +2822,14 @@
             emits: ['update:show', 'update:fullscreen', 'bring-to-front', 'start-drag', 'start-resize'],
             template: ChatWidgetTemplate,
             setup: ChatWidgetSetup
+        });
+
+        // Register PDF reading panel component
+        app.component('paper-pdf-panel', {
+            props: ['show', 'position', 'size', 'zIndex', 'fullscreen', 'animating', 'currentLang', 'currentArxivId', 't'],
+            emits: ['update:show', 'update:fullscreen', 'update:current', 'bring-to-front', 'start-drag', 'open-external'],
+            template: PaperPdfPanelTemplate,
+            setup: PaperPdfPanelSetup
         });
 
         if (window.ElementPlusIconsVue) {
