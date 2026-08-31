@@ -1,0 +1,107 @@
+"""
+Semantic Scholar 检索器 - 跨会议/期刊/预印本混合源
+"""
+
+import json
+import time
+import urllib.parse
+from datetime import UTC, datetime
+
+from arxiv_pulse.crawler.publisher import _http_get_json
+
+_S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+
+def _s2_date_range(date_from: str | None, date_to: str | None) -> str:
+    if date_from and date_to:
+        return f"{date_from},{date_to}"
+    if date_from:
+        return f"{date_from},{date_from}"
+    return ""
+
+
+def search_s2_items(
+    query: str, date_from: str | None = None, date_to: str | None = None, rows: int = 25, api_key: str | None = None
+) -> list[dict]:
+    params = {
+        "query": query,
+        "limit": str(min(rows, 100)),
+        "fields": "title,abstract,venue,year,publicationDate,externalIds,openAccessPdf,authors,url",
+    }
+    if date_from or date_to:
+        params["publicationDateOrYear"] = _s2_date_range(date_from, date_to)
+    url = f"{_S2_SEARCH_URL}?{urllib.parse.urlencode(params)}"
+    headers = {"User-Agent": "arXiv-Pulse/1.0 (mailto:arxiv-pulse@example.com)"}
+    if api_key:
+        headers["x-api-key"] = api_key
+    for attempt in range(4):
+        data = _http_get_json(url, headers, timeout=25)
+        if data is not None:
+            return data.get("data", [])
+        time.sleep(5 * (attempt + 1))
+    return []
+
+
+def _parse_authors(item: dict) -> str:
+    authors = []
+    for a in item.get("authors") or []:
+        if a.get("name"):
+            authors.append({"name": a["name"], "affiliation": ""})
+    return json.dumps(authors, ensure_ascii=False)
+
+
+def save_s2_item(db, item: dict, profile_id: int | None = None):
+    """S2 命中入库：优先 arXiv id，其次 DOI；两者皆无则跳过"""
+    from arxiv_pulse.models import Paper
+
+    external = item.get("externalIds") or {}
+    arxiv_id = external.get("ArXiv")
+    doi = (external.get("DOI") or "").lower()
+    if not arxiv_id and not doi:
+        return None
+
+    entry_id = arxiv_id or doi
+
+    with db.get_session() as session:
+        if session.query(Paper).filter_by(arxiv_id=entry_id).first():
+            return None
+
+        title = item.get("title") or ""
+        year = item.get("year") or datetime.now().year
+        date = item.get("publicationDate") or f"{year}-01-01"
+        try:
+            published = datetime.strptime(date[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            published = datetime(year, 1, 1, tzinfo=UTC)
+
+        pdf_url = (item.get("openAccessPdf") or {}).get("url")
+        if not pdf_url and doi:
+            pdf_url = f"https://doi.org/{doi}"
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        paper = Paper(
+            arxiv_id=entry_id,
+            doi=doi or None,
+            title=title,
+            authors=_parse_authors(item),
+            abstract=item.get("abstract") or "",
+            categories=item.get("venue") or "",
+            primary_category=item.get("venue") or "",
+            published=published,
+            pdf_url=pdf_url,
+            journal_ref=item.get("venue") or None,
+            comment="",
+            search_query=f"s2:{item.get('paperId', '')}",
+            relevance_score=0.0,
+            source="arxiv" if arxiv_id else "doi",
+        )
+        session.add(paper)
+        session.commit()
+        session.refresh(paper)
+
+    if profile_id is not None:
+        from arxiv_pulse.services.profile_service import attach_profile
+
+        attach_profile(db, paper, profile_id)
+    return paper
