@@ -144,10 +144,12 @@ async def get_recent_papers(
     offset: int = Query(0, ge=0),
     categories: str | None = Query(None, description="Comma-separated category codes"),
     sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
+    profile_ids: str | None = Query(None, description="Comma-separated research profile ids"),
 ):
     """Get recent papers with pagination and optional category/source filter"""
     source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
     category_list = [c.strip() for c in categories.split(",")] if categories else None
+    profile_list = [int(x) for x in profile_ids.split(",") if x.strip().isdigit()] if profile_ids else None
     date_from = _parse_date_param(date_from)
     date_to = _parse_date_param(date_to)
     _validate_date_range(date_from, date_to)
@@ -161,6 +163,13 @@ async def get_recent_papers(
         source_cond = _build_source_cond(source_list, category_list)
         if source_cond is not None:
             query = query.filter(source_cond)
+
+        if profile_list:
+            from arxiv_pulse.models import PaperProfile
+
+            query = query.join(PaperProfile, PaperProfile.paper_id == Paper.id).filter(
+                PaperProfile.profile_id.in_(profile_list)
+            )
 
         total = query.count()
         papers = query.order_by(Paper.published.desc()).offset(offset).limit(limit).all()
