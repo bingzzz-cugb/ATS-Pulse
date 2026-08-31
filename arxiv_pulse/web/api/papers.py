@@ -6,6 +6,8 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import and_
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -20,6 +22,33 @@ from arxiv_pulse.utils import sse_event, sse_response
 from arxiv_pulse.web.dependencies import get_db
 
 router = APIRouter()
+
+
+def _parse_date_param(v: str | None) -> datetime | None:
+    """解析 YYYY-MM-DD 查询参数,失败返回 None(由调用方决定是否报错)"""
+    if not v:
+        return None
+    try:
+        return datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, f"日期格式应为 YYYY-MM-DD: {v}")
+
+
+def _validate_date_range(date_from: datetime | None, date_to: datetime | None) -> None:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, "date_from 不能晚于 date_to")
+
+
+def _apply_date_range(query, date_from: datetime | None, date_to: datetime | None):
+    """按日期区间构造 published 过滤;区间为空时返回原 query"""
+    if not date_from and not date_to:
+        return query
+    conds = []
+    if date_from:
+        conds.append(Paper.published >= date_from)
+    if date_to:
+        conds.append(Paper.published < date_to + timedelta(days=1))
+    return query.filter(and_(*conds))
 
 
 def _build_source_cond(source_list: list[str] | None, category_list: list[str] | None = None):
@@ -101,6 +130,8 @@ async def list_papers(
 @router.get("/recent")
 async def get_recent_papers(
     days: int = Query(7, ge=1),
+    date_from: str | None = Query(None, description="Start date (YYYY-MM-DD), takes precedence over days"),
+    date_to: str | None = Query(None, description="End date (YYYY-MM-DD), takes precedence over days"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     categories: str | None = Query(None, description="Comma-separated category codes"),
@@ -109,9 +140,15 @@ async def get_recent_papers(
     """Get recent papers with pagination and optional category/source filter"""
     source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
     category_list = [c.strip() for c in categories.split(",")] if categories else None
+    date_from = _parse_date_param(date_from)
+    date_to = _parse_date_param(date_to)
+    _validate_date_range(date_from, date_to)
     with get_db().get_session() as session:
-        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
-        query = session.query(Paper).filter(Paper.published >= cutoff)
+        if date_from or date_to:
+            query = _apply_date_range(session.query(Paper), date_from, date_to)
+        else:
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+            query = session.query(Paper).filter(Paper.published >= cutoff)
 
         source_cond = _build_source_cond(source_list, category_list)
         if source_cond is not None:
@@ -263,12 +300,21 @@ async def cancel_recent_update():
 @router.post("/recent/update")
 async def update_recent_papers(
     days: int = Query(7, ge=1, le=30),
+    date_from: str | None = Query(None, description="Start date (YYYY-MM-DD), takes precedence over days"),
+    date_to: str | None = Query(None, description="End date (YYYY-MM-DD), takes precedence over days"),
     need_sync: bool = Query(True),
     categories: str | None = Query(None, description="Comma-separated category codes"),
     sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
     limit: int | None = Query(None, ge=1, le=200, description="Override config limit"),
 ):
     """SSE endpoint: sync -> query -> cache recent papers"""
+
+    date_from = _parse_date_param(date_from)
+    date_to = _parse_date_param(date_to)
+    _validate_date_range(date_from, date_to)
+    use_range = bool(date_from or date_to)
+    date_from_str = date_from.strftime("%Y-%m-%d") if date_from else None
+    date_to_str = date_to.strftime("%Y-%m-%d") if date_to else None
 
     async def event_generator():
         import asyncio
@@ -299,7 +345,11 @@ async def update_recent_papers(
         yield sse_event("log", {"message": "开始更新最近论文..."})
         await asyncio.sleep(0.1)
 
-        yield sse_event("log", {"message": f"查询范围: 最近 {days} 天"})
+        if use_range:
+            range_desc = f"{date_from_str or '最早'} ~ {date_to_str or '今天'}"
+            yield sse_event("log", {"message": f"查询范围: {range_desc}"})
+        else:
+            yield sse_event("log", {"message": f"查询范围: 最近 {days} 天"})
         await asyncio.sleep(0.1)
 
         if category_list:
@@ -337,7 +387,12 @@ async def update_recent_papers(
 
                         try:
                             result = await asyncio.to_thread(
-                                crawler.sync_query, query=query, years_back=sync_years, force=False
+                                crawler.sync_query,
+                                query=query,
+                                years_back=sync_years,
+                                force=False,
+                                date_from=date_from_str,
+                                date_to=date_to_str,
                             )
                             total_added += result.get("new_papers", 0)
                         except Exception as e:
@@ -364,6 +419,7 @@ async def update_recent_papers(
                     pub_result = await asyncio.to_thread(
                         sync_all_publishers, days_back=7, pub_keys=pub_keys,
                         cancel_check=lambda: cancelled_flag["value"],
+                        date_from=date_from_str, date_to=date_to_str,
                     )
                     if cancelled_flag["value"]:
                         _unregister_update_task(task_id)
@@ -381,8 +437,11 @@ async def update_recent_papers(
         await asyncio.sleep(0.1)
 
         with db.get_session() as session:
-            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
-            query = session.query(Paper).filter(Paper.published >= cutoff)
+            if use_range:
+                query = _apply_date_range(session.query(Paper), date_from, date_to)
+            else:
+                cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+                query = session.query(Paper).filter(Paper.published >= cutoff)
 
             source_cond = _build_source_cond(source_list, category_list)
             if source_cond is not None:
@@ -435,10 +494,12 @@ async def update_recent_papers(
                 task.completed_at = datetime.now(UTC).replace(tzinfo=None)
                 session.commit()
 
-        # 全部处理完成后才写缓存——取消时会提前 return，不会留下过期缓存
-        db.set_recent_cache(days_back=days, paper_ids=paper_ids, total_count=total_count)
-        yield sse_event("log", {"message": "缓存已更新"})
-        await asyncio.sleep(0.1)
+        # 全部处理完成后才写缓存——取消时会提前 return，不会留下过期缓存。
+        # 自定义日期区间不写缓存(缓存仅表达"最近 N 天"语义)
+        if not use_range:
+            db.set_recent_cache(days_back=days, paper_ids=paper_ids, total_count=total_count)
+            yield sse_event("log", {"message": "缓存已更新"})
+            await asyncio.sleep(0.1)
 
         yield sse_event(
             "done",
@@ -1066,3 +1127,38 @@ async def download_pdf(arxiv_id: str):
             raise HTTPException(status_code=response.status_code, detail="Failed to download PDF from arXiv")
     except requests.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Failed to download PDF: {str(e)}")
+
+
+@router.get("/{arxiv_id}/pdf")
+async def get_paper_pdf(arxiv_id: str):
+    """获取论文 PDF（arxiv 源本地缓存；doi 源跳转外部链接）"""
+    from fastapi.responses import FileResponse, RedirectResponse, Response
+
+    from arxiv_pulse.services.pdf_service import get_or_download_arxiv_pdf, pdf_cache_path
+
+    with get_db().get_session() as session:
+        paper = session.query(Paper).filter_by(arxiv_id=arxiv_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    cache = pdf_cache_path(arxiv_id)
+    if cache.exists():
+        return FileResponse(
+            cache,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "inline"},
+        )
+
+    if paper.source == "doi":
+        if paper.pdf_url:
+            return RedirectResponse(paper.pdf_url, status_code=302)
+        raise HTTPException(status_code=404, detail="No PDF URL available")
+
+    data = get_or_download_arxiv_pdf(arxiv_id)
+    if data is None:
+        raise HTTPException(status_code=502, detail="PDF download failed")
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline"},
+    )
