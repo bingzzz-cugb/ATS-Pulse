@@ -21,6 +21,7 @@ const usePaperStore = defineStore('paper', () => {
     const configStore = useConfigStore();
     const recentSelectedCategories = computed(() => configStore.recentCategories);
     const recentSources = ref(['arxiv', 'tgrs', 'science']);
+    const recentProfileIds = ref([]);
     
     const homeQuery = ref('');
     const homeSearching = ref(false);
@@ -331,7 +332,7 @@ const usePaperStore = defineStore('paper', () => {
     }
     
     async function updateRecentPapers(configStore) {
-        if (recentSources.value.length === 0) {
+        if (recentSources.value.length === 0 && recentProfileIds.value.length === 0) {
             ElementPlus.ElMessage.error(configStore?.currentLang === 'zh' ? '请选择更新来源' : 'Please select at least one source');
             return;
         }
@@ -348,11 +349,15 @@ const usePaperStore = defineStore('paper', () => {
                 limit: configStore.settingsConfig.recent_papers_limit || 50
             });
 
-            // 默认关注 CV；手动选了领域则用所选
-            const cats = recentSelectedCategories.value.length > 0 ? recentSelectedCategories.value : ['cs.CV'];
-            params.set('categories', cats.join(','));
-            if (recentSources.value && recentSources.value.length > 0) {
-                params.set('sources', recentSources.value.join(','));
+            if (recentProfileIds.value.length > 0) {
+                params.set('profile_ids', recentProfileIds.value.join(','));
+            } else {
+                // 默认关注 CV；手动选了领域则用所选
+                const cats = recentSelectedCategories.value.length > 0 ? recentSelectedCategories.value : ['cs.CV'];
+                params.set('categories', cats.join(','));
+                if (recentSources.value && recentSources.value.length > 0) {
+                    params.set('sources', recentSources.value.join(','));
+                }
             }
 
             const response = await API.papers.recentUpdate(params.toString());
@@ -406,10 +411,12 @@ const usePaperStore = defineStore('paper', () => {
                 offset: recentPapers.value.length
             });
             
-            if (recentSelectedCategories.value.length > 0) {
+            if (recentProfileIds.value.length > 0) {
+                params.set('profile_ids', recentProfileIds.value.join(','));
+            } else if (recentSelectedCategories.value.length > 0) {
                 params.set('categories', recentSelectedCategories.value.join(','));
             }
-            
+
             const res = await API.papers.recent(params.toString());
             const data = await res.json();
             
@@ -660,7 +667,7 @@ const usePaperStore = defineStore('paper', () => {
         recentPapers, loadingRecent, loadingProgress, loadingTotal, loadingController,
         updatingRecent, recentLogs, recentDays, recentDateRange, recentSelectedIds,
         recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers,
-        recentTotalCount, recentLoadingMore, recentSources,
+        recentTotalCount, recentLoadingMore, recentSources, recentProfileIds,
         homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds, homeController, homeLogsContainer, homeUserScrolledUp,
         searchQuery, searching, searchLogs, searchResults, searchSelectedIds,
         paperCart, showCart, cartExportLoading, cartPosition, cartPanelRef, cartZIndex,

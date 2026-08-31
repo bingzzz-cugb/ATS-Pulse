@@ -254,20 +254,11 @@
                                     style="width: 260px; margin-left: 8px;"
                                 >
                                 </el-date-picker>
-                                <el-tooltip 
-                                    :content="getSelectedFieldsTooltip()" 
-                                    placement="bottom"
-                                    :disabled="!hasSelectedFields()"
-                                >
-                                    <el-button @click="openFieldSelector('recent')" plain>
-                                        <el-icon><Operation /></el-icon> {{ t('papers.filterFields') }}
-                                    </el-button>
-                                </el-tooltip>
-                                <el-checkbox-group v-model="recentSources">
-                                    <el-checkbox label="arxiv">arXiv</el-checkbox>
-                                    <el-checkbox label="tgrs">TGRS</el-checkbox>
-                                    <el-checkbox label="science">Science</el-checkbox>
-                                </el-checkbox-group>
+                                <el-select v-model="recentProfileIds" multiple collapse-tags :collapse-tags-tooltip="true"
+                                           :placeholder="t('settings.profilesTitle')" size="default"
+                                           style="width: 200px; margin-left: 8px;">
+                                    <el-option v-for="p in profileStore.profiles" :key="p.id" :label="p.name" :value="p.id"></el-option>
+                                </el-select>
                                 <el-button type="primary" @click="updateRecentPapers(configStore)" :loading="updatingRecent" :disabled="updatingRecent">
                                     <el-icon><Refresh /></el-icon> {{ t('papers.update') }}
                                 </el-button>
@@ -602,7 +593,7 @@
     </transition>
     
     <!-- Settings Drawer Component -->
-    <settings-drawer v-model="showSettings"></settings-drawer>
+    <settings-drawer v-model="showSettings" @open-profile-create="openProfileCreate" @open-profile-edit="openProfileEdit"></settings-drawer>
 
             <!-- Collection Dialogs Component -->
             <collection-dialogs 
@@ -860,7 +851,9 @@
     <script src="js/stores/collectionStore.js"></script>
     <script src="js/stores/chatStore.js"></script>
     <script src="js/stores/uiStore.js"></script>
+    <script src="js/stores/profileStore.js"></script>
     <script src="js/components/PaperCard.js"></script>
+    <script src="js/components/ProfileDialog.js"></script>
     <script src="js/components/FieldSelectorDialog.js"></script>
     <script src="js/components/PaperBasketPanel.js"></script>
     <script src="js/components/SettingsDrawer.js"></script>
@@ -881,6 +874,44 @@
                 const collectionStore = useCollectionStore();
                 const chatStore = useChatStore();
                 const uiStore = useUiStore();
+                const profileStore = useProfileStore();
+
+                function openProfileDialogApp(editId) {
+                    const host = document.createElement('div');
+                    document.body.appendChild(host);
+                    const tmp = Vue.createApp({
+                        setup() {
+                            const show = ref(true);
+                            const editing = ref(editId);
+                            const close = () => {
+                                show.value = false;
+                                setTimeout(() => {
+                                    try { tmp.unmount(); } catch (e) {}
+                                    host.remove();
+                                }, 150);
+                            };
+                            return { show, editing, t: (k) => configStore.t(k), close };
+                        },
+                        template: `<profile-dialog :show="show" :editing="editing" :t="t" @update:show="close" @saved="profileStore.fetchProfiles()"></profile-dialog>`
+                    });
+                    tmp.use(ElementPlus);
+                    tmp.use(pinia);
+                    tmp.component('profile-dialog', {
+                        props: ['show', 'editing', 't'],
+                        emits: ['update:show', 'saved'],
+                        template: ProfileDialogTemplate,
+                        setup: ProfileDialogSetup
+                    });
+                    tmp.mount(host);
+                }
+
+                function openProfileCreate() {
+                    openProfileDialogApp(null);
+                }
+
+                function openProfileEdit(id) {
+                    openProfileDialogApp(id);
+                }
                 
                 // configStore properties
                 const {
@@ -927,7 +958,7 @@
                 // paperStore properties
                 const { 
                     stats, fieldStats, recentPapers, loadingRecent, loadingProgress, loadingTotal, loadingController,
-                    updatingRecent, recentLogs, recentDays, recentDateRange, recentSources,
+                    updatingRecent, recentLogs, recentDays, recentDateRange, recentSources, recentProfileIds,
                     recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers,
                     recentTotalCount, recentLoadingMore,
                     homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds, homeController, homeUserScrolledUp,
@@ -2750,12 +2781,20 @@
                     fetchCollections();
                     fetchSyncStatus();
                     fetchConfig();
+                    profileStore.fetchProfiles();
                     
                     // Delay loading recent papers to let other content load first
                     setTimeout(() => {
                         fetchRecentCache();
                     }, 100);
                     
+                    window.addEventListener('open-profile-create', () => {
+                        openProfileCreate();
+                    });
+                    window.addEventListener('open-profile-edit', (e) => {
+                        openProfileEdit(e.detail);
+                    });
+
                     window.addEventListener('analyze-paper', (e) => {
                         const paper = e.detail;
                         if (!selectedChatPapers.value.some(p => p.arxiv_id === paper.arxiv_id)) {
@@ -2869,6 +2908,8 @@
                     scrollToBottom, handleChatScroll,
                     bringToFront, handleEscKey,
                     t: (key, params) => configStore.t(key, params), currentLang, currentTheme, toggleLanguage, toggleTheme, i18n, getFieldTranslation: configStore.getFieldTranslation,
+                    profileStore, profiles: profileStore.profiles, recentProfileIds,
+                    openProfileCreate, openProfileEdit,
                     showFieldSelector, fieldSelectorSource, tempSelectedFields, fieldSearchQuery,
                     fieldSelectorExpanded, openFieldSelector, toggleFieldSelectorGroup, toggleTempField,
                     removeFromTempSelection, clearTempSelection, filteredCategories,
@@ -2925,6 +2966,14 @@
             emits: ['update:show', 'update:fullscreen', 'bring-to-front', 'start-drag', 'start-resize', 'open-pdf'],
             template: ChatWidgetTemplate,
             setup: ChatWidgetSetup
+        });
+
+        // Register profile dialog component
+        app.component('profile-dialog', {
+            props: ['show', 'editing', 't'],
+            emits: ['update:show', 'saved'],
+            template: ProfileDialogTemplate,
+            setup: ProfileDialogSetup
         });
 
         // Register PDF reading panel component

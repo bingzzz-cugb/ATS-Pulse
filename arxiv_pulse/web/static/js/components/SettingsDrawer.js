@@ -56,16 +56,26 @@ const SettingsDrawerTemplate = `
         </div>
 
         <div class="settings-section">
-            <h3>{{ t('settings.researchFields') }}</h3>
+            <h3>{{ t('settings.profilesTitle') }}</h3>
             <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">
-                {{ t('settings.fieldsHint') }}
+                {{ t('settings.profilesHint') }}
             </p>
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-subtle); border-radius: 8px; cursor: pointer;" @click="openFieldSelector('settings')">
-                <span style="font-size: 13px; color: var(--text-primary);">
-                    {{ currentLang === 'zh' ? '已选择' : 'Selected' }}: {{ settingsConfig.selected_fields?.length || 0 }} {{ currentLang === 'zh' ? '个领域' : 'fields' }}
-                </span>
-                <el-icon><ArrowRight /></el-icon>
+            <div v-for="p in profileStore.profiles" :key="p.id"
+                 style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-subtle); border-radius: 8px; margin-bottom: 8px; cursor: pointer;"
+                 @click="dispatchProfileEdit(p.id)">
+                <div style="flex: 1;">
+                    <div style="font-size: 13px; font-weight: 600;">{{ p.name }}
+                        <el-tag v-if="!p.enabled" size="small" type="info" style="margin-left: 6px;">{{ currentLang === 'zh' ? '停用' : 'Disabled' }}</el-tag>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                        {{ (p.retrieval_plan?.arxiv_queries || []).length }} {{ t('settings.profileQueries') }} · {{ p.journals?.filter?.(j => j.enabled)?.length || 0 }} {{ t('settings.profileJournals') }} · {{ Object.keys(p.sources || {}).filter(k => p.sources[k]).length }} {{ t('settings.profileSourcesShort') }}
+                    </div>
+                </div>
+                <el-button text size="small" @click.stop="removeProfile(p.id)">{{ t('common.delete') }}</el-button>
             </div>
+            <el-button type="primary" plain size="small" style="width: 100%;" @click="dispatchProfileCreate">
+                <el-icon><Plus /></el-icon> {{ t('settings.profilesCreate') }}
+            </el-button>
         </div>
 
         <div class="settings-section">
@@ -96,9 +106,33 @@ const SettingsDrawerTemplate = `
 
 const SettingsDrawerSetup = (props) => {
     const configStore = useConfigStore();
-    
+    const profileStore = useProfileStore();
+
     const { settingsConfig, savingSettings, testingAI, currentLang, currentTheme } = storeToRefs(configStore);
-    const { t, saveApiKey, testAIConnection, openFieldSelector, setLanguage, setTheme } = configStore;
+    const { t, saveApiKey, testAIConnection, setLanguage, setTheme } = configStore;
+
+    onMounted(() => {
+        profileStore.fetchProfiles();
+    });
+
+    function dispatchProfileCreate() {
+        window.dispatchEvent(new CustomEvent('open-profile-create'));
+    }
+
+    function dispatchProfileEdit(id) {
+        window.dispatchEvent(new CustomEvent('open-profile-edit', { detail: id }));
+    }
+
+    async function removeProfile(id) {
+        const configForMsg = configStore.currentLang === 'zh' ? '删除该检索领域档案？' : 'Delete this research profile?';
+        try {
+            await ElementPlus.ElMessageBox.confirm(configForMsg, '确认', { type: 'warning' });
+            await profileStore.removeProfile(id);
+            ElementPlus.ElMessage.success(configStore.currentLang === 'zh' ? '已删除' : 'Deleted');
+        } catch (e) {
+            if (e !== 'cancel') ElementPlus.ElMessage.error(configStore.currentLang === 'zh' ? '删除失败' : 'Delete failed');
+        }
+    }
     
     const aiLanguageOptions = [
         { value: 'zh', label: '中文' },
@@ -141,10 +175,12 @@ const SettingsDrawerSetup = (props) => {
         t,
         saveApiKey,
         testAIConnection,
-        openFieldSelector,
         aiLanguageOptions,
         initYearOptions,
         onLanguageChange,
-        onThemeChange
+        onThemeChange,
+        profileStore,
+        removeProfile,
+        dispatchProfileCreate, dispatchProfileEdit
     };
 };
