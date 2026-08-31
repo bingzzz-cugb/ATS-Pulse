@@ -7,6 +7,8 @@ const usePaperStore = defineStore('paper', () => {
     const updatingRecent = ref(false);
     const recentLogs = ref([]);
     const recentDays = ref('1');
+    // recentDays 设为 'custom' 时的日期区间 [start, end]，格式 YYYY-MM-DD
+    const recentDateRange = ref([]);
     const recentSelectedIds = ref([]);
     const recentSearchQuery = ref('');
     const recentSearching = ref(false);
@@ -656,7 +658,7 @@ const usePaperStore = defineStore('paper', () => {
     
     return {
         recentPapers, loadingRecent, loadingProgress, loadingTotal, loadingController,
-        updatingRecent, recentLogs, recentDays, recentSelectedIds,
+        updatingRecent, recentLogs, recentDays, recentDateRange, recentSelectedIds,
         recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers,
         recentTotalCount, recentLoadingMore, recentSources,
         homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds, homeController, homeLogsContainer, homeUserScrolledUp,

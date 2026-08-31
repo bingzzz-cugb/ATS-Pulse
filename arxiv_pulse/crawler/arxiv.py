@@ -23,6 +23,15 @@ def _normalize_id(entry_id: str) -> str:
     return arxiv_id
 
 
+def _date_range_query(query: str, date_from: str | None, date_to: str | None) -> str:
+    """将提交日期区间（YYYY-MM-DD）包装进 arXiv 查询串，由 API 侧过滤"""
+    if not date_from and not date_to:
+        return query
+    lo = date_from.replace("-", "") + "0000" if date_from else "000000000000"
+    hi = date_to.replace("-", "") + "2359" if date_to else "999912312359"
+    return f"({query}) AND submittedDate:[{lo} TO {hi}]"
+
+
 class ArXivCrawler:
     def __init__(self):
         self.db = Database()
@@ -38,6 +47,8 @@ class ArXivCrawler:
         max_results: int = 100,
         days_back: int | None = None,
         cutoff_date: datetime | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[arxiv.Result]:
         """Search arXiv for papers matching query
 
@@ -47,6 +58,8 @@ class ArXivCrawler:
             days_back: Optional number of days to look back (deprecated, use cutoff_date)
             cutoff_date: Optional UTC datetime cutoff; papers older than this will be skipped
                          and iteration will stop early due to descending date order.
+            date_from: Optional submission date lower bound (YYYY-MM-DD), filters via API
+            date_to: Optional submission date upper bound (YYYY-MM-DD), filters via API
         """
         sort_by_map = {
             "submittedDate": arxiv.SortCriterion.SubmittedDate,
@@ -62,7 +75,7 @@ class ArXivCrawler:
         sort_order = sort_order_map.get(Config.ARXIV_SORT_ORDER, arxiv.SortOrder.Descending)
 
         search = arxiv.Search(
-            query=query,
+            query=_date_range_query(query, date_from, date_to),
             max_results=max_results,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -255,7 +268,13 @@ class ArXivCrawler:
         return f"同步最近 {days_since_sync} 天 (上次: {latest_date.strftime('%Y-%m-%d')})"
 
     def sync_query(
-        self, query: str, years_back: int = 3, force: bool = False, arxiv_max_results: int | None = None
+        self,
+        query: str,
+        years_back: int = 3,
+        force: bool = False,
+        arxiv_max_results: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> dict[str, Any]:
         """Sync papers for a specific query, fetching missing papers from recent years
 
@@ -265,10 +284,32 @@ class ArXivCrawler:
             force: If True, continue fetching all papers within time range,
                    skip existing papers only (don't stop early)
             arxiv_max_results: Maximum papers to fetch from arXiv API (default: Config.ARXIV_MAX_RESULTS)
+            date_from: Optional submission date lower bound (YYYY-MM-DD); when given,
+                       fetches the whole range instead of incremental sync
+            date_to: Optional submission date upper bound (YYYY-MM-DD)
         """
         output.do(f"同步查询: {query}" + (" (强制模式)" if force else ""))
 
         max_results = int(arxiv_max_results) if arxiv_max_results is not None else int(Config.ARXIV_MAX_RESULTS)
+
+        # 日期区间模式：不走增量/遇旧停止逻辑，直接把区间内论文拉回并去重入库
+        if date_from or date_to:
+            output.debug(f"日期区间同步: {date_from or '...'} ~ {date_to or '...'}")
+            papers = self.search_arxiv(
+                query, max_results=max_results, date_from=date_from, date_to=date_to
+            )
+            new_papers = self.filter_new_papers(papers)
+            saved = self.save_papers(new_papers, query)
+            output.done(f"区间同步完成: 查询 {len(papers)} 篇，新增 {len(saved)} 篇")
+            time.sleep(1)
+            return {
+                "query": query,
+                "date_range": {"from": date_from, "to": date_to},
+                "total_found": len(papers),
+                "new_papers": len(saved),
+                "saved_papers": saved,
+                "force_mode": False,
+            }
 
         cutoff_date = datetime.now(UTC) - timedelta(days=365 * years_back)
 

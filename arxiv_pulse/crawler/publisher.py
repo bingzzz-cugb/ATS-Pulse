@@ -46,11 +46,25 @@ def _http_get_json(url: str, headers: dict, timeout: int = 30) -> dict | None:
         return None
 
 
-def fetch_crossref_items(issn: str, days_back: int = 7, rows: int = 200) -> list[dict]:
-    """按 Crossref deposit 日期拉取期刊近 N 天新增记录（deposit 日期粒度最细）"""
-    since = (datetime.now(UTC) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+def fetch_crossref_items(
+    issn: str, days_back: int = 7, rows: int = 200, date_from: str | None = None, date_to: str | None = None
+) -> list[dict]:
+    """按 Crossref deposit 日期拉取期刊近 N 天新增记录（deposit 日期粒度最细）
+
+    date_from/date_to 提供时优先使用（deposit 日期区间过滤）
+    """
+    if date_from or date_to:
+        parts = []
+        if date_from:
+            parts.append(f"from-deposit-date:{date_from}")
+        if date_to:
+            parts.append(f"until-deposit-date:{date_to}")
+        deposit_filter = ",".join(parts)
+    else:
+        since = (datetime.now(UTC) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        deposit_filter = f"from-deposit-date:{since}"
     params = {
-        "filter": f"from-deposit-date:{since}",
+        "filter": deposit_filter,
         "sort": "deposited",
         "order": "desc",
         "rows": str(rows),
@@ -163,10 +177,13 @@ def save_doi_paper(item: dict, pub: dict, s2_result: tuple[str | None, str | Non
 
 
 def sync_publisher(pub: dict, days_back: int = 7, limit: int = 200,
-                   cancel_check: Callable[[], bool] | None = None) -> dict:
+                   cancel_check: Callable[[], bool] | None = None,
+                   date_from: str | None = None, date_to: str | None = None) -> dict:
     """同步单个期刊最近的论文，cancel_check 返回 True 时提前退出"""
     db = Database()
-    items = fetch_crossref_items(pub["issn"], days_back=days_back, rows=limit)
+    items = fetch_crossref_items(
+        pub["issn"], days_back=days_back, rows=limit, date_from=date_from, date_to=date_to
+    )
     new_papers = 0
     failed = 0
     for item in items:
@@ -190,7 +207,8 @@ def sync_publisher(pub: dict, days_back: int = 7, limit: int = 200,
 
 
 def sync_all_publishers(days_back: int = 7, pub_keys: list[str] | None = None,
-                        cancel_check: Callable[[], bool] | None = None) -> dict:
+                        cancel_check: Callable[[], bool] | None = None,
+                        date_from: str | None = None, date_to: str | None = None) -> dict:
     """同步期刊，pub_keys 为空时同步所有配置期刊；cancel_check 为 True 时提前退出"""
     total_new = 0
     results = []
@@ -200,7 +218,9 @@ def sync_all_publishers(days_back: int = 7, pub_keys: list[str] | None = None,
         if pub_keys is not None and pub["key"] not in pub_keys:
             continue
         try:
-            r = sync_publisher(pub, days_back=days_back, cancel_check=cancel_check)
+            r = sync_publisher(
+                pub, days_back=days_back, cancel_check=cancel_check, date_from=date_from, date_to=date_to
+            )
         except Exception as e:
             r = {"publisher": pub["key"], "error": str(e)}
         results.append(r)

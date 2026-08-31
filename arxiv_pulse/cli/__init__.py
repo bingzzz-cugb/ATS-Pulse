@@ -15,7 +15,7 @@ from pathlib import Path
 import click
 
 from arxiv_pulse.__version__ import __version__
-from arxiv_pulse.core import ServiceLock, check_and_acquire_lock
+from arxiv_pulse.core import ServiceLock, check_and_acquire_lock, pid_is_alive, terminate_process
 
 
 def _is_port_in_use(host: str, port: int) -> bool:
@@ -432,37 +432,23 @@ def stop(directory, force):
 
         click.echo(f"🔍 发现运行中的服务 / Found running service: http://{host}:{port} (PID: {pid})")
 
-        try:
-            sig = signal.SIGKILL if force else signal.SIGTERM
-            sig_name = "SIGKILL" if force else "SIGTERM"
-            os.kill(pid, sig)
+        sig_name = "SIGKILL" if force else "SIGTERM"
+        if terminate_process(pid, force):
             click.echo(f"📤 已发送 {sig_name} 信号 / Sent {sig_name} signal...")
 
-            for _ in range(10):
-                try:
-                    os.kill(pid, 0)
-                    time.sleep(0.5)
-                except ProcessLookupError:
-                    break
+        for _ in range(10):
+            if not pid_is_alive(pid):
+                break
+            time.sleep(0.5)
 
-            try:
-                os.kill(pid, 0)
-                if not force:
-                    click.secho("\n⚠️  进程未响应，尝试强制停止 / Process not responding, forcing stop...", fg="yellow")
-                    os.kill(pid, signal.SIGKILL)
-                    time.sleep(1)
-            except ProcessLookupError:
-                pass
+        if pid_is_alive(pid):
+            if not force:
+                click.secho("\n⚠️  进程未响应，尝试强制停止 / Process not responding, forcing stop...", fg="yellow")
+                terminate_process(pid, force=True)
+                time.sleep(1)
 
-            lock.release()
-            click.secho("\n✅ 服务已停止 / Service stopped", fg="green", bold=True)
-        except ProcessLookupError:
-            lock.release()
-            click.secho("\n✅ 进程已不存在，已清理锁文件 / Process gone, lock file cleaned", fg="green")
-        except PermissionError:
-            click.secho("\n❌ 没有权限停止该进程，请尝试使用 sudo / No permission, try sudo", fg="red")
-        except Exception as e:
-            click.secho(f"\n❌ 停止失败 / Stop failed: {e}", fg="red")
+        lock.release()
+        click.secho("\n✅ 服务已停止 / Service stopped", fg="green", bold=True)
     else:
         lock.release()
         click.secho("\n✅ 已清理锁文件 / Lock file cleaned", fg="green")
@@ -510,37 +496,30 @@ def restart(directory, foreground, force):
         pid = info.get("pid")
         click.echo(f"🔍 发现运行中的服务 / Found running service: http://{prev_host}:{prev_port} (PID: {pid})")
 
-        try:
-            sig = signal.SIGKILL if force else signal.SIGTERM
-            click.echo("📤 正在停止服务 / Stopping service...")
-            os.kill(pid, sig)
+        click.echo("📤 正在停止服务 / Stopping service...")
+        terminate_process(pid, force)
 
-            for _ in range(10):
-                try:
-                    os.kill(pid, 0)
-                    time.sleep(0.5)
-                except ProcessLookupError:
-                    break
+        for _ in range(10):
+            if not pid_is_alive(pid):
+                break
+            time.sleep(0.5)
 
-            try:
-                os.kill(pid, 0)
-                if not force:
-                    os.kill(pid, signal.SIGKILL)
-                    time.sleep(1)
-            except ProcessLookupError:
-                pass
+        if pid_is_alive(pid):
+            if not force:
+                click.echo("⚠️  进程未响应，尝试强制停止 / Process not responding, forcing stop...")
+                terminate_process(pid, force=True)
+                time.sleep(1)
 
-            lock.release()
-            click.echo("✅ 旧服务已停止 / Old service stopped")
-        except ProcessLookupError:
-            lock.release()
-            click.echo("✅ 旧进程已不存在 / Old process gone")
-        except PermissionError:
-            click.secho("❌ 没有权限停止该进程，请尝试使用 sudo / No permission, try sudo", fg="red")
-            sys.exit(1)
-        except Exception as e:
-            click.secho(f"❌ 停止失败 / Stop failed: {e}", fg="red")
-            sys.exit(1)
+        lock.release()
+        click.echo("✅ 旧服务已停止 / Old service stopped")
+
+        # On Windows TerminateProcess is async: PID state flips to dead but the
+        # listening socket is released only after process cleanup, so poll the
+        # port to avoid a false "port in use" error on the fresh start.
+        for _ in range(40):
+            if not _is_port_in_use(prev_host, prev_port):
+                break
+            time.sleep(0.25)
     else:
         click.echo("⏹️  服务未运行 / Service not running")
 

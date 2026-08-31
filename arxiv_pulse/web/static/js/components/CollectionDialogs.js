@@ -67,6 +67,9 @@ const CollectionDialogsTemplate = `
                             <template #prefix><el-icon><Search /></el-icon></template>
                         </el-input>
                         <el-checkbox v-model="useAiSearch" :disabled="aiSearching">{{ t('collections.aiSearch') }}</el-checkbox>
+                        <el-button size="small" type="primary" @click="performSearch" :loading="aiSearching" :disabled="aiSearching">
+                            {{ t('common.search') }}
+                        </el-button>
                         <el-divider direction="vertical"></el-divider>
                         <el-radio-group v-model="collectionSortBy" size="small" @change="performSearch">
                             <el-radio-button value="published">
