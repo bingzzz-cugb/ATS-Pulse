@@ -4,6 +4,7 @@ Papers API Router
 
 import json
 import re
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_
@@ -86,6 +87,13 @@ def _paper_matches_source(paper, source_list: list[str] | None) -> bool:
         return any(pub["key"] in source_list and paper.categories == pub["categories"]
                    for pub in PUBLISHERS)
     return False
+
+
+_DOI_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Za-z0-9]+$")
+
+
+def looks_like_full_title(q: str) -> bool:
+    return len(q) > 15 and " " in q.strip()
 
 
 def parse_arxiv_id(query: str) -> str | None:
@@ -647,211 +655,121 @@ async def quick_fetch(q: str = Query(..., min_length=1)):
                 yield sse_event("error", {"message": f"获取失败: {str(e)[:100]}"})
                 return
 
-        yield sse_event("log", {"message": f"正在进行模糊搜索: {q}"})
-        await asyncio.sleep(0.1)
-
-        main_query = q
-        alternative_queries = []
-        keywords = []
-
-        if Config.AI_API_KEY:
-            try:
-                import openai
-
-                yield sse_event("log", {"message": "正在使用 AI 解析搜索词..."})
-                await asyncio.sleep(0.1)
-
-                client = openai.OpenAI(api_key=Config.AI_API_KEY, base_url=Config.AI_BASE_URL)
-
-                ai_prompt = f"""用户搜索 arXiv 论文，查询是: "{q}"
-
-请分析查询意图并生成最优搜索策略：
-
-1. 识别专有名词/缩写/特定术语（如 DeepH, NequIP, MACE, DFT 等），保持原样
-2. 对于中文查询，翻译为英文
-3. 使用 arXiv 高级搜索语法：
-   - AND 表示必须包含
-   - OR 表示任一包含  
-   - 引号 "" 表示精确短语匹配
-4. 生成主查询和备选查询
-5. 提取用于相关性计算的关键词
-
-返回 JSON 格式：
-{{
-  "main_query": "精确的组合搜索词（使用 AND/OR/引号）",
-  "alternative_queries": ["备选查询1", "备选查询2"],
-  "keywords": ["关键词1", "关键词2"]
-}}
-
-示例：
-输入: "使用深度学习哈密顿量方法预测力场"
-输出: {{"main_query": "deep learning AND Hamiltonian AND force field", "alternative_queries": ["DeepH", "machine learning interatomic potentials"], "keywords": ["deep learning", "Hamiltonian", "force field"]}}
-
-输入: "DeepH"
-输出: {{"main_query": "DeepH", "alternative_queries": ["deep learning Hamiltonian"], "keywords": ["DeepH", "deep learning", "Hamiltonian"]}}
-
-只返回 JSON，不要其他文本。"""
-
-                response = client.chat.completions.create(
-                    model=Config.AI_MODEL or "DeepSeek-V3.2",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "你是 arXiv 论文搜索助手，擅长识别专业术语并将自然语言查询转换为最优的学术搜索关键词。返回纯 JSON，不要 markdown 代码块。",
-                        },
-                        {"role": "user", "content": ai_prompt},
-                    ],
-                    max_tokens=300,
-                    temperature=0.2,
-                )
-
-                ai_response = response.choices[0].message.content
-                if ai_response:
-                    ai_response = ai_response.strip()
-                    if ai_response.startswith("```"):
-                        ai_response = re.sub(r"^```(?:json)?\s*", "", ai_response)
-                        ai_response = re.sub(r"\s*```$", "", ai_response)
-                    try:
-                        parsed = json.loads(ai_response)
-                        if isinstance(parsed, dict):
-                            main_query = parsed.get("main_query", q)
-                            alternative_queries = parsed.get("alternative_queries", [])
-                            keywords = parsed.get("keywords", [])
-                            log_msg = f"AI 解析: 主查询={main_query}"
-                            if alternative_queries:
-                                log_msg += f", 备选={len(alternative_queries)}个"
-                            yield sse_event("log", {"message": log_msg})
-                            await asyncio.sleep(0.1)
-                    except json.JSONDecodeError:
-                        pass
-
-            except Exception as e:
-                yield sse_event("log", {"message": f"AI 解析失败，使用原始搜索词: {str(e)[:50]}"})
-                await asyncio.sleep(0.1)
-
-        if not keywords:
-            keywords = [kw.strip() for kw in re.split(r"[^\w]+", q.lower()) if len(kw.strip()) > 2]
-
-        import arxiv as arxiv_lib
+        yield sse_event("log", {"message": "正在搜索本地数据库..."})
+        await asyncio.sleep(0.05)
 
         from arxiv_pulse.search import SearchEngine, SearchFilter
 
-        all_papers = []
-        remote_total = 0
-        remote_new = 0
-
-        yield sse_event("log", {"message": "正在从 arXiv 远程搜索..."})
-        await asyncio.sleep(0.1)
-
-        queries_to_search = [main_query] + alternative_queries[:2]
-        searched_queries = set()
-
-        try:
-            crawler = ArXivCrawler()
-            for query in queries_to_search:
-                if query.lower() in searched_queries:
-                    continue
-                searched_queries.add(query.lower())
-
-                yield sse_event("log", {"message": f"远程搜索: {query}"})
-                await asyncio.sleep(0.05)
-
-                papers, total, new_count = crawler.search_and_save(query, max_results=15)
-                remote_total += total
-                remote_new += new_count
-
-                if papers:
-                    all_papers.extend(papers)
-                    if new_count > 0:
-                        yield sse_event("log", {"message": f"找到 {total} 篇，其中 {new_count} 篇为新论文"})
-                    else:
-                        yield sse_event("log", {"message": f"找到 {total} 篇论文（均已收录）"})
-                else:
-                    yield sse_event("log", {"message": "未找到相关论文"})
-                await asyncio.sleep(0.1)
-
-                if len(all_papers) >= 30:
-                    break
-
-        except arxiv_lib.HTTPError:
-            yield sse_event("log", {"message": "arXiv API 暂时不可用，仅使用本地搜索"})
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            yield sse_event("log", {"message": f"远程搜索失败: {str(e)[:50]}"})
-            await asyncio.sleep(0.1)
-
-        yield sse_event("log", {"message": "正在搜索本地数据库..."})
-        await asyncio.sleep(0.1)
-
         with db.get_session() as session:
             search_engine = SearchEngine(session)
-            for query in queries_to_search[:2]:
-                filter_config = SearchFilter(
-                    query=query,
-                    search_fields=["title", "abstract"],
-                    days_back=0,
-                    limit=Config.SEARCH_LIMIT,
-                    sort_by="published",
-                    sort_order="desc",
-                )
-                local_papers = search_engine.search_papers(filter_config)
-                for p in local_papers:
-                    all_papers.append(p)
+            filter_config = SearchFilter(
+                query=q,
+                search_fields=["title", "abstract", "authors"],
+                days_back=0,
+                limit=Config.SEARCH_LIMIT,
+                sort_by="published",
+                sort_order="desc",
+            )
+            local_papers = search_engine.search_papers(filter_config)
 
-        seen_ids = set()
-        unique_papers = []
-        for p in all_papers:
-            if p.arxiv_id not in seen_ids:
-                seen_ids.add(p.arxiv_id)
-                unique_papers.append(p)
-
-        with db.get_session() as session:
-            search_engine = SearchEngine(session)
-            scored_papers = search_engine.sort_papers_by_relevance(unique_papers, keywords, q)
-            papers_with_scores = [(p, score) for p, score in scored_papers[:30] if score > 0]
-            if not papers_with_scores:
-                papers_with_scores = scored_papers[:25]
-
-        if not papers_with_scores:
-            yield sse_event("log", {"message": "未找到匹配论文"})
-            await asyncio.sleep(0.1)
-            yield sse_event("done", {"total": 0})
+        if local_papers:
+            for p in local_papers[:20]:
+                with db.get_session() as s:
+                    fresh = s.query(Paper).filter_by(id=p.id).first()
+                if fresh:
+                    p = fresh
+                yield sse_event("result", {"paper": enhance_paper_data(p), "match_type": "local"})
+            yield sse_event("done", {"total": len(local_papers)})
             return
 
-        summary_msg = f"合并结果：共 {len(papers_with_scores)} 篇论文（已按相关性排序）"
-        if remote_new > 0:
-            summary_msg += f"，远程新增 {remote_new} 篇"
-        yield sse_event("log", {"message": summary_msg})
-        await asyncio.sleep(0.1)
+        yield sse_event("log", {"message": "本地未命中，尝试按 DOI / 标题远程检索..."})
+        await asyncio.sleep(0.05)
 
-        for i, (paper, relevance_score) in enumerate(papers_with_scores):
+        q_stripped = q.strip()
+        # 本地精确匹配（arXiv ID / DOI）
+        with db.get_session() as s2:
+            local_exact = s2.query(Paper).filter(
+                (Paper.arxiv_id == q_stripped) | (Paper.doi == q_stripped.lower()) | (Paper.arxiv_id == q_stripped.lower())
+            ).first()
+        if local_exact:
+            yield sse_event("result", {"paper": enhance_paper_data(local_exact), "match_type": "exact"})
+            yield sse_event("done", {"total": 1})
+            return
+
+
+        if _DOI_RE.match(q_stripped):
+            import urllib.request as urllib_req
+
+            from arxiv_pulse.crawler.publisher import save_doi_paper
+
+            doi_l = q_stripped.lower()
+            try:
+                req = urllib_req.Request(
+                    f"https://api.crossref.org/works/{urllib.parse.quote(doi_l)}",
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                with urllib_req.urlopen(req, timeout=20) as resp:
+                    item = json.loads(resp.read().decode("utf-8"))["message"]
+                container = item.get("container-title") or [""]
+                container = container[0] if isinstance(container, list) else container
+                pub = {"key": "custom", "name": container or "Journal", "categories": container or "Journal"}
+                save_doi_paper(item, pub, db=db)
+            except Exception as e:
+                yield sse_event("error", {"message": f"DOI 检索失败: {str(e)[:80]}"})
+                return
             with db.get_session() as s:
-                fresh_paper = s.query(Paper).filter_by(arxiv_id=paper.arxiv_id).first()
-                if fresh_paper:
-                    paper = fresh_paper
+                paper = s.query(Paper).filter_by(arxiv_id=doi_l).first()
+            if paper:
+                yield sse_event("log", {"message": "已从 Crossref 获取论文"})
+                yield sse_event("result", {"paper": enhance_paper_data(paper), "match_type": "doi"})
+                yield sse_event("done", {"total": 1})
+            else:
+                yield sse_event("error", {"message": "DOI 已存在记录或入库失败"})
+            return
 
-            if not paper.summarized:
-                yield sse_event("log", {"message": f"[{i + 1}/{len(papers_with_scores)}] 正在总结..."})
-                await asyncio.sleep(0.05)
-                if summarize_and_cache_paper(paper):
-                    with db.get_session() as s:
-                        paper = s.query(Paper).filter_by(arxiv_id=paper.arxiv_id).first() or paper
+        if looks_like_full_title(q_stripped):
+            yield sse_event("log", {"message": "正按标题检索 arXiv..."})
+            try:
+                crawler = ArXivCrawler()
+                papers, total, new_count = crawler.search_and_save(f'ti:"{q_stripped}"', max_results=5)
+            except Exception as e:
+                papers, total, new_count = [], 0, 0
+                yield sse_event("log", {"message": f"arXiv 标题检索失败: {str(e)[:50]}"})
+            if papers:
+                for p in papers[:5]:
+                    yield sse_event("result", {"paper": enhance_paper_data(p), "match_type": "title"})
+                yield sse_event("done", {"total": len(papers)})
+                return
+            yield sse_event("log", {"message": "arXiv 未命中，尝试 Crossref..."})
+            try:
+                import urllib.request as urllib_req
 
-            with db.get_session() as s:
-                figure_url = get_figure_url_cached(paper.arxiv_id, s)
-            if not figure_url:
-                yield sse_event("log", {"message": f"[{i + 1}/{len(papers_with_scores)}] 获取图片..."})
-                await asyncio.sleep(0.05)
-                fetch_and_cache_figure(paper.arxiv_id)
+                from arxiv_pulse.crawler.publisher import save_doi_paper
 
-            enhanced = enhance_paper_data(paper)
-            enhanced["search_relevance_score"] = round(relevance_score, 1)
-            yield sse_event(
-                "result", {"paper": enhanced, "index": i + 1, "total": len(papers_with_scores), "match_type": "fuzzy"}
-            )
-            await asyncio.sleep(0.03)
+                url = "https://api.crossref.org/works?" + urllib.parse.urlencode(
+                    {"query.bibliographic": q_stripped, "rows": "5", "mailto": "arxiv-pulse@example.com",
+                     "select": "DOI,title,author,abstract,container-title,published"}
+                )
+                req = urllib_req.Request(url, headers={"User-Agent": "arXiv-Pulse/1.0 (mailto:arxiv-pulse@example.com)"})
+                with urllib_req.urlopen(req, timeout=20) as resp:
+                    items = json.loads(resp.read().decode("utf-8"))["message"].get("items", [])
+                for item in items[:5]:
+                    pub = {"key": "custom", "name": "Journal",
+                           "categories": (item.get("container-title") or [""])[0] if item.get("container-title") else "Journal"}
+                    save_doi_paper(item, pub, db=db)
+                with db.get_session() as s:
+                    for item in items[:5]:
+                        doi_l = (item.get("DOI") or "").lower()
+                        paper = s.query(Paper).filter_by(arxiv_id=doi_l).first()
+                        if paper:
+                            yield sse_event("result", {"paper": enhance_paper_data(paper), "match_type": "title"})
+                yield sse_event("done", {"total": 5})
+            except Exception as e:
+                yield sse_event("error", {"message": f"Crossref 检索失败: {str(e)[:80]}"})
+            return
 
-        yield sse_event("done", {"total": len(papers_with_scores)})
+        yield sse_event("log", {"message": "未识别为特定文章，未在本地找到相关论文"})
+        yield sse_event("done", {"total": 0})
 
     return sse_response(event_generator)
 
