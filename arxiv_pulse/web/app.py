@@ -56,6 +56,13 @@ def create_app() -> FastAPI:
     if static_path.exists() and any(static_path.iterdir()):
         app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
 
+    @app.middleware("http")
+    async def no_cache_static_files(request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/api"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     return app
 
 
