@@ -14,6 +14,11 @@ const ChatWidgetTemplate = `
                     {{ t('chat.title') }}
                 </span>
                 <div class="chat-header-actions">
+                    <el-button text @click.stop="$emit('open-pdf')" :disabled="selectedChatPapers.length === 0" :title="selectedChatPapers.length === 0 ? t('paper.noSelection') : t('paper.original')">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                            <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h5v6h5v10H6z"/>
+                        </svg>
+                    </el-button>
                     <el-button text @click.stop="createNewChat" :title="t('chat.newChat')">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
