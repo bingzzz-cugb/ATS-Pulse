@@ -170,25 +170,47 @@ async def send_message(session_id: int, data: SendMessageRequest):
 
             session.commit()
 
+        # 本次选中的论文 + 本会话历史中曾带过的论文（自动注入缓存，最多 4 篇）
+        target_paper_ids = list(data.paper_ids or [])
+        with get_db().get_session() as session:
+            history_msgs = (
+                session.query(ChatMessage)
+                .filter_by(session_id=session_id, role="user")
+                .order_by(ChatMessage.created_at.asc())
+                .all()
+            )
+            for msg in history_msgs:
+                if not msg.paper_ids:
+                    continue
+                try:
+                    hist_ids = json.loads(msg.paper_ids)
+                except (ValueError, TypeError):
+                    continue
+                for pid in hist_ids:
+                    if pid not in target_paper_ids:
+                        target_paper_ids.append(pid)
+        target_paper_ids = target_paper_ids[:4]
+        paper_count = len(target_paper_ids)
+
         papers_content = ""
-        if data.paper_ids:
+        if target_paper_ids:
             yield sse_event(
                 "progress",
                 {
                     "stage": "start",
                     "message": m["start"],
-                    "total_papers": len(data.paper_ids),
+                    "total_papers": len(target_paper_ids),
                 },
             )
             await asyncio.sleep(0.3)
 
-            for idx, arxiv_id in enumerate(data.paper_ids):
+            for idx, arxiv_id in enumerate(target_paper_ids):
                 yield sse_event(
                     "progress",
                     {
                         "stage": "paper_start",
                         "arxiv_id": arxiv_id,
-                        "message": m["paper_start"](idx + 1, len(data.paper_ids), arxiv_id),
+                        "message": m["paper_start"](idx + 1, len(target_paper_ids), arxiv_id),
                     },
                 )
                 await asyncio.sleep(0.2)
@@ -333,6 +355,7 @@ You can:
 
 Please respond in clear, professional yet accessible language. If the user has provided paper content, analyze based on that content.
 Format your response using Markdown, including headers, lists, code blocks, etc.
+When your answer would be long (e.g. full translations or section-by-section explanations), reply in parts: output one part, then tell the user to reply "continue" for the next part, to avoid truncation.
 
 IMPORTANT: Always respond in English."""
         else:
@@ -347,6 +370,7 @@ IMPORTANT: Always respond in English."""
 
 请用清晰、专业但易懂的语言回答问题。如果用户提供了论文内容，请基于论文内容进行分析。
 回复请使用 Markdown 格式，包括标题、列表、代码块等。
+如果回答内容较长（例如全文翻译、逐段解读），请分段作答：先输出一部分，末尾提示用户回复“继续”以获取下一部分，避免一次性输出过长被截断。
 
 重要：请始终使用中文回复。"""
 
@@ -370,7 +394,7 @@ IMPORTANT: Always respond in English."""
             response = client.chat.completions.create(
                 model=Config.AI_MODEL or "DeepSeek-V3.2",
                 messages=messages_for_api,
-                max_tokens=4096,
+                max_tokens=8000,
                 temperature=0.7,
                 stream=True,
             )
