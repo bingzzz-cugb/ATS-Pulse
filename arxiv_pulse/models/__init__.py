@@ -2,6 +2,7 @@ from arxiv_pulse.models.base import DEFAULT_CONFIG, Base, utcnow
 from arxiv_pulse.models.chat import ChatMessage, ChatSession
 from arxiv_pulse.models.collection import Collection, CollectionPaper
 from arxiv_pulse.models.paper import FigureCache, Paper, PaperContentCache, TranslationCache
+from arxiv_pulse.models.profile import PaperProfile, ResearchProfile
 from arxiv_pulse.models.system import RecentResult, SyncTask, SystemConfig
 
 __all__ = [
@@ -19,4 +20,6 @@ __all__ = [
     "SyncTask",
     "RecentResult",
     "SystemConfig",
+    "ResearchProfile",
+    "PaperProfile",
 ]
