@@ -744,11 +744,12 @@
             :position="chatPosition"
             :size="chatSize"
             :z-index="chatZIndex"
-            :fullscreen="chatFullscreen"
+            :fullscreen="chatFullscreen || splitMode"
+            :split="splitMode"
             :animating="chatAnimating"
             :current-lang="currentLang"
             @update:show="chatExpanded = $event"
-            @update:fullscreen="chatFullscreen = $event"
+            @update:fullscreen="setChatFullscreen"
             @bring-to-front="bringToFront('chat')"
             @start-drag="startDragChat"
             @start-resize="startResizeChat"
@@ -760,14 +761,14 @@
             :show="pdfExpanded"
             :position="pdfPosition"
             :size="pdfSize"
-            :z-index="pdfFullscreen ? pdfFsZ : pdfZIndex"
-            :fullscreen="pdfFullscreen"
+            :z-index="splitMode ? 2099 : pdfZIndex"
+            :fullscreen="splitMode"
+            :split="splitMode"
             :animating="pdfAnimating"
             :current-lang="currentLang"
             :current-arxiv-id="currentPdfArxivId"
             :t="t"
             @update:show="pdfExpanded = $event"
-            @update:fullscreen="pdfFullscreen = $event"
             @update:current="currentPdfArxivId = $event"
             @bring-to-front="bringToFront('pdf')"
             @start-drag="startDragPdf"
@@ -947,7 +948,7 @@
 
                 // PDF 阅读面板状态
                 const pdfExpanded = ref(false);
-                const pdfFullscreen = ref(false);
+                const splitMode = ref(false);
                 const pdfAnimating = ref(false);
                 const pdfZIndex = ref(1500);
                 const pdfSize = ref({ width: 620, height: 760 });
@@ -957,7 +958,12 @@
                     x: Math.max(0, chatPosition.value.x + pdfOffset.value.dx),
                     y: Math.max(0, chatPosition.value.y + pdfOffset.value.dy)
                 }));
-                const pdfFsZ = computed(() => Math.max(cartZIndex.value, chatZIndex.value, detailZIndex.value, collectionDetailZIndex.value) - 1);
+                function pdfDefaultSize() {
+                    return {
+                        width: Math.min(620, Math.max(360, window.innerWidth * 0.35)),
+                        height: Math.min(760, window.innerHeight * 0.8)
+                    };
+                }
 
                 const quickPrompts = computed(() => currentLang.value === 'zh' ? [
                     { icon: '📝', text: '帮我总结这篇论文的核心内容' },
@@ -1114,15 +1120,21 @@
                 function openPdfPanel() {
                     if (!selectedChatPapers.value.length) return;
                     const first = selectedChatPapers.value[0];
-                    const pdfW = Math.min(620, Math.max(360, window.innerWidth * 0.35));
-                    pdfSize.value.width = pdfW;
-                    pdfSize.value.height = Math.min(760, window.innerHeight * 0.8);
+                    const size = pdfDefaultSize();
+                    pdfSize.value.width = size.width;
+                    pdfSize.value.height = size.height;
                     const gap = 12;
-                    let dx = -(pdfW + gap);
+                    let dx = -(size.width + gap);
                     if (chatPosition.value.x + dx < 0) dx = chatSize.value.width + gap;
                     pdfOffset.value = { dx, dy: 0 };
                     currentPdfArxivId.value = first.arxiv_id;
                     pdfExpanded.value = true;
+                    if (chatFullscreen.value) {
+                        chatFullscreen.value = false;
+                        splitMode.value = true;
+                        pdfAnimating.value = true;
+                        setTimeout(() => { pdfAnimating.value = false; }, 300);
+                    }
                     bringToFront('pdf');
                 }
 
@@ -1130,14 +1142,6 @@
                     const id = currentPdfArxivId.value;
                     if (!id) return;
                     window.open(`/api/papers/${id}/pdf`, '_blank');
-                }
-
-                function togglePdfFullscreen() {
-                    pdfAnimating.value = true;
-                    pdfFullscreen.value = !pdfFullscreen.value;
-                    setTimeout(() => {
-                        pdfAnimating.value = false;
-                    }, 300);
                 }
 
                 // Drag functionality
@@ -1200,12 +1204,24 @@
                     document.removeEventListener('mouseup', stopDrag);
                 }
 
-                function toggleChatFullscreen() {
+                function setChatFullscreen(next) {
                     chatAnimating.value = true;
-                    chatFullscreen.value = !chatFullscreen.value;
+                    pdfAnimating.value = true;
                     setTimeout(() => {
                         chatAnimating.value = false;
+                        pdfAnimating.value = false;
                     }, 300);
+                    if (!next) {
+                        splitMode.value = false;
+                        chatFullscreen.value = false;
+                        return;
+                    }
+                    if (pdfExpanded.value) {
+                        splitMode.value = true;
+                        chatFullscreen.value = false;
+                        return;
+                    }
+                    chatFullscreen.value = true;
                 }
 
                 // Resize functionality
@@ -2745,6 +2761,9 @@
                         if (!selectedChatPapers.value.some(p => p.arxiv_id === paper.arxiv_id)) {
                             selectedChatPapers.value.push(paper);
                         }
+                        if (!chatExpanded.value) {
+                            chatSize.value = pdfDefaultSize();
+                        }
                         chatExpanded.value = true;
                         bringToFront('chat');
                         if (chatSessions.value.length === 0) {
@@ -2840,9 +2859,9 @@
                     fetchChatSessions, createNewChat, selectChatSession,
                     sendChatMessage, sendQuickPrompt, quickPrompts, formatChatMessage, formatChatTime, formatDate, formatRelativeTime,
                     togglePaperSelection, removeSelectedChatPaper, deleteChatSession, clearAllChatSessions, userScrolledUp,
-                    toggleChatFullscreen, startResizeChat, toggleChat,
-                    pdfExpanded, pdfPosition, pdfSize, pdfZIndex, pdfFullscreen, pdfAnimating, currentPdfArxivId,
-                    openPdfPanel, openPdfExternal, togglePdfFullscreen, startDragPdf,
+                    setChatFullscreen, startResizeChat, toggleChat,
+                    pdfExpanded, pdfPosition, pdfSize, pdfZIndex, splitMode, pdfAnimating, currentPdfArxivId,
+                    openPdfPanel, openPdfExternal, startDragPdf,
                     paperCart, showCart, cartExportLoading, cartPosition, cartPanelRef, cartZIndex,
                     startDragCart, startDragChat,
                     addToCart, removeFromCart, removeFromCartByArxivId, clearCart, isInCart,
@@ -2902,7 +2921,7 @@
 
         // Register chat-widget component
         app.component('chat-widget', {
-            props: ['show', 'position', 'size', 'zIndex', 'fullscreen', 'animating', 'currentLang'],
+            props: ['show', 'position', 'size', 'zIndex', 'fullscreen', 'split', 'animating', 'currentLang'],
             emits: ['update:show', 'update:fullscreen', 'bring-to-front', 'start-drag', 'start-resize', 'open-pdf'],
             template: ChatWidgetTemplate,
             setup: ChatWidgetSetup
@@ -2910,8 +2929,8 @@
 
         // Register PDF reading panel component
         app.component('paper-pdf-panel', {
-            props: ['show', 'position', 'size', 'zIndex', 'fullscreen', 'animating', 'currentLang', 'currentArxivId', 't'],
-            emits: ['update:show', 'update:fullscreen', 'update:current', 'bring-to-front', 'start-drag', 'open-external'],
+            props: ['show', 'position', 'size', 'zIndex', 'fullscreen', 'split', 'animating', 'currentLang', 'currentArxivId', 't'],
+            emits: ['update:show', 'update:current', 'bring-to-front', 'start-drag', 'open-external'],
             template: PaperPdfPanelTemplate,
             setup: PaperPdfPanelSetup
         });

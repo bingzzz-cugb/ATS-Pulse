@@ -2,7 +2,7 @@ const PaperPdfPanelTemplate = `
     <transition name="panel">
         <div v-if="show"
              class="chat-window pdf-window"
-             :class="{ fullscreen: fullscreen, 'animate-fullscreen': animating }"
+             :class="{ fullscreen: fullscreen, 'animate-fullscreen': animating, 'pdf-split': split }"
              :style="fullscreen ? { zIndex: zIndex } : { position: 'fixed', left: position.x + 'px', top: position.y + 'px', width: size.width + 'px', height: size.height + 'px', zIndex: zIndex }"
              @mousedown="onMouseDown"
              @click="$emit('bring-to-front')">
@@ -20,14 +20,6 @@ const PaperPdfPanelTemplate = `
                     <el-button text @click.stop="$emit('open-external')" :title="t('paper.openExternal')">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                             <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                        </svg>
-                    </el-button>
-                    <el-button text @click.stop="toggleFullscreen" :title="fullscreen ? (currentLang === 'zh' ? '还原' : 'Restore') : (currentLang === 'zh' ? '全屏' : 'Fullscreen')">
-                        <svg v-if="fullscreen" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                            <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
-                        </svg>
-                        <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                            <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
                         </svg>
                     </el-button>
                     <div class="collapse-btn" @click.stop="$emit('update:show', false)" :title="currentLang === 'zh' ? '关闭' : 'Close'">
@@ -77,9 +69,6 @@ const PaperPdfPanelSetup = (props, { emit }) => {
         if (e.target.closest('.collapse-btn') || e.target.closest('.el-button') || e.target.closest('.el-select')) return;
         emit('start-drag', e);
     };
-    const toggleFullscreen = () => {
-        emit('update:fullscreen', !props.fullscreen);
-    };
     const t = props.t;
-    return { pdfSrc, currentPaper, shortTitle, onMouseDown, toggleFullscreen, t, pdfLoading };
+    return { pdfSrc, currentPaper, shortTitle, onMouseDown, t, pdfLoading };
 };

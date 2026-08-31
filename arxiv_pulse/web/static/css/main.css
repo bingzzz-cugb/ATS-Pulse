@@ -3958,6 +3958,24 @@
             height: auto !important;
             border-radius: 0;
         }
+        .chat-window.fullscreen.pdf-split {
+            left: 50% !important;
+            right: 0 !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            width: auto !important;
+            height: auto !important;
+            border-radius: 0;
+            box-shadow: none;
+        }
+        .chat-window.pdf-window.fullscreen.pdf-split {
+            left: 0 !important;
+            right: 50% !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            width: auto !important;
+            height: auto !important;
+        }
         .pdf-body {
             flex: 1;
             min-height: 0;
