@@ -21,6 +21,12 @@ class ResearchProfile(Base):
     enabled = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
+    def sources_json(self) -> dict:
+        try:
+            return json.loads(self.sources) if self.sources else {"arxiv": True, "crossref": True, "s2": True}
+        except (ValueError, TypeError):
+            return {"arxiv": True, "crossref": True, "s2": True}
+
     def to_dict(self):
         def _load(value, default):
             try:
