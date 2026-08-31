@@ -3970,6 +3970,21 @@
             border: none;
             background: #fff;
         }
+        .pdf-loading {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: #d5d8dc;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        .pdf-body {
+            position: relative;
+        }
         .pdf-empty {
             display: flex;
             align-items: center;

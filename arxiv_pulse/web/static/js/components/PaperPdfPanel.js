@@ -38,14 +38,28 @@ const PaperPdfPanelTemplate = `
                 </div>
             </div>
             <div class="pdf-body">
-                <iframe v-if="currentArxivId" :key="currentArxivId" :src="pdfSrc" title="PDF"></iframe>
-                <div v-else class="pdf-empty">{{ t('paper.noSelection') }}</div>
+                <iframe v-if="currentArxivId" :key="currentArxivId" :src="pdfSrc" title="PDF" @load="pdfLoading = false"></iframe>
+                <div v-if="pdfLoading && currentArxivId" class="pdf-loading">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>{{ t('pdf.loading') }}</span>
+                </div>
+                <div v-else-if="!currentArxivId" class="pdf-empty">{{ t('paper.noSelection') }}</div>
             </div>
         </div>
     </transition>
 `;
 
 const PaperPdfPanelSetup = (props, { emit }) => {
+    const pdfLoading = ref(true);
+    let loadTimer = null;
+    const resetLoading = () => {
+        pdfLoading.value = true;
+        clearTimeout(loadTimer);
+        loadTimer = setTimeout(() => { pdfLoading.value = false; }, 8000);
+    };
+    resetLoading();
+    watch(() => props.currentArxivId, resetLoading);
+    onBeforeUnmount(() => clearTimeout(loadTimer));
     const pdfSrc = computed(() => `/api/papers/${props.currentArxivId}/pdf`);
     const currentPaper = computed({
         get: () => props.currentArxivId,
@@ -64,5 +78,5 @@ const PaperPdfPanelSetup = (props, { emit }) => {
         emit('update:fullscreen', !props.fullscreen);
     };
     const t = props.t;
-    return { pdfSrc, currentPaper, shortTitle, onMouseDown, toggleFullscreen, t };
+    return { pdfSrc, currentPaper, shortTitle, onMouseDown, toggleFullscreen, t, pdfLoading };
 };
