@@ -118,7 +118,8 @@ const API = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
-            })
+            }),
+            compact: (id) => fetch(`${API_BASE}/chat/sessions/${id}/compact`, { method: 'POST' })
         }
     }
 };

@@ -230,7 +230,8 @@ const i18nZh = {
         analyzePaper: '分析',
         clearAll: '清空所有',
         copy: '复制',
-        regenerate: '重新生成'
+        regenerate: '重新生成',
+        compact: '压缩对话'
     },
     paper: {
         keyFindings: '关键发现',

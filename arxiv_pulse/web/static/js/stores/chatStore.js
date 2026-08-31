@@ -82,6 +82,34 @@ const useChatStore = defineStore('chat', () => {
         }
     }
     
+    async function compactCurrentSession() {
+        const configStore = useConfigStore();
+        if (!currentChatSession.value) return;
+        if (chatMessages.value.length < 8) {
+            ElementPlus.ElMessage.info(configStore.currentLang === 'zh' ? '对话太短，无需压缩' : 'Conversation is too short to compact');
+            return;
+        }
+        try {
+            const res = await API.chat.sessions.compact(currentChatSession.value.id);
+            const data = await res.json();
+            if (res.ok && data && data.compacted) {
+                await selectChatSession(currentChatSession.value);
+                ElementPlus.ElMessage.success(
+                    configStore.currentLang === 'zh'
+                        ? `已压缩对话，保留了 ${data.removed + 1} 条消息的摘要`
+                        : `Compacted, summary of ${data.removed} messages created`
+                );
+            } else {
+                ElementPlus.ElMessage.info(data?.reason === 'too short'
+                    ? (configStore.currentLang === 'zh' ? '对话太短，无需压缩' : 'Conversation is too short to compact')
+                    : (configStore.currentLang === 'zh' ? '压缩失败' : 'Compact failed'));
+            }
+        } catch (e) {
+            console.error('Compact failed:', e);
+            ElementPlus.ElMessage.error(configStore.currentLang === 'zh' ? '压缩失败' : 'Compact failed');
+        }
+    }
+
     async function deleteChatSession(session) {
         const configStore = useConfigStore();
         try {
@@ -502,6 +530,7 @@ const useChatStore = defineStore('chat', () => {
         scrollToBottom, handleChatScroll, fetchChatSessions, createNewChat,
         selectChatSession, deleteChatSession, clearAllChatSessions,
         sendQuickPrompt, sendChatMessage, removeSelectedChatPaper,
+        compactCurrentSession,
         formatChatMessage, formatChatTime, copyMessage, regenerateMessage
     };
 });

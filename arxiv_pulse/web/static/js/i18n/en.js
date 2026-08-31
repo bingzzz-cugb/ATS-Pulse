@@ -230,7 +230,8 @@ const i18nEn = {
         analyzePaper: 'Analyze',
         clearAll: 'Clear All',
         copy: 'Copy',
-        regenerate: 'Regenerate'
+        regenerate: 'Regenerate',
+        compact: 'Compact chat'
     },
     paper: {
         keyFindings: 'Key Findings',

@@ -335,13 +335,19 @@ async def send_message(session_id: int, data: SendMessageRequest):
                 yield sse_event("progress", {"stage": "papers_ready", "message": m["papers_ready"]})
                 await asyncio.sleep(0.3)
 
+        # 滑动窗口：从最新往回累计，超出预算丢弃最旧的消息（论文注入预算另计）
         history_messages = []
         with get_db().get_session() as session:
             messages = (
                 session.query(ChatMessage).filter_by(session_id=session_id).order_by(ChatMessage.created_at.asc()).all()
             )
-            for msg in messages:
+            budget = 30000
+            for msg in reversed(messages):
+                if budget <= 0 and history_messages:
+                    break
                 history_messages.append({"role": msg.role, "content": msg.content})
+                budget -= len(msg.content or "")
+        history_messages.reverse()
 
         if data.language == "en":
             system_prompt = """You are a professional academic research assistant specializing in physics, materials science, and computational science.
@@ -356,6 +362,7 @@ You can:
 Please respond in clear, professional yet accessible language. If the user has provided paper content, analyze based on that content.
 Format your response using Markdown, including headers, lists, code blocks, etc.
 When your answer would be long (e.g. full translations or section-by-section explanations), reply in parts: output one part, then tell the user to reply "continue" for the next part, to avoid truncation.
+If the full paper content is embedded in the system message, answer based on it directly - never ask the user to paste the paper or claim you do not have it.
 
 IMPORTANT: Always respond in English."""
         else:
@@ -371,6 +378,7 @@ IMPORTANT: Always respond in English."""
 请用清晰、专业但易懂的语言回答问题。如果用户提供了论文内容，请基于论文内容进行分析。
 回复请使用 Markdown 格式，包括标题、列表、代码块等。
 如果回答内容较长（例如全文翻译、逐段解读），请分段作答：先输出一部分，末尾提示用户回复“继续”以获取下一部分，避免一次性输出过长被截断。
+如果系统消息中已嵌入论文全文，请直接基于该内容回答，不要向用户索要原文，也不要声称自己没有原文。
 
 重要：请始终使用中文回复。"""
 
@@ -465,3 +473,72 @@ async def get_paper_content_api(arxiv_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
+
+
+@router.post("/sessions/{session_id}/compact")
+async def compact_session(session_id: int):
+    """压缩会话历史：AI 生成摘要替换旧消息，保留最近 2 条"""
+    with get_db().get_session() as session:
+        messages = (
+            session.query(ChatMessage)
+            .filter_by(session_id=session_id)
+            .order_by(ChatMessage.created_at.asc())
+            .all()
+        )
+        if len(messages) < 8:
+            return {"compacted": False, "removed": 0, "reason": "too short"}
+        if not Config.AI_API_KEY:
+            raise HTTPException(status_code=400, detail="AI API 未配置")
+
+        # 压缩输入也走滑动窗口预算，避免历史本身超限
+        budget = 30000
+        to_summarize = []
+        for msg in reversed(messages):
+            if budget <= 0 and to_summarize:
+                break
+            label = "用户" if msg.role == "user" else "AI"
+            to_summarize.append(f"{label}: {msg.content}")
+            budget -= len(msg.content or "")
+        to_summarize.reverse()
+
+        try:
+            import openai
+
+            client = openai.OpenAI(api_key=Config.AI_API_KEY, base_url=Config.AI_BASE_URL)
+            resp = client.chat.completions.create(
+                model=Config.AI_MODEL or "DeepSeek-V3.2",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是一个对话压缩器。把下面的学术论文讨论对话压缩成简洁的中文摘要（若 UI 为英文可保留原文）"
+                            "：保留讨论的论文标题/arXiv ID、用户的核心问题、AI 给出的关键结论、用户最后关注的话题。"
+                            "直接输出压缩后的摘要，不要任何开场白或客套话，控制在 500 字以内。"
+                        ),
+                    },
+                    {"role": "user", "content": "\n".join(to_summarize)},
+                ],
+                max_tokens=2000,
+                temperature=0.2,
+            )
+            summary = (resp.choices[0].message.content or "").strip()
+            if not summary:
+                return {"compacted": False, "removed": 0, "reason": "empty summary"}
+
+            keep_ids = {m.id for m in messages[-2:]}
+            removed = 0
+            for msg in messages:
+                if msg.id not in keep_ids:
+                    session.delete(msg)
+                    removed += 1
+            session.add(
+                ChatMessage(
+                    session_id=session_id,
+                    role="user",
+                    content=f"【对话已压缩】以下是之前对话的摘要：\n{summary}",
+                )
+            )
+            session.commit()
+            return {"compacted": True, "removed": removed}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Compact failed: {str(e)}")

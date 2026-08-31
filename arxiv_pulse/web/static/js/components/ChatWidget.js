@@ -24,6 +24,12 @@ const ChatWidgetTemplate = `
                             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                         </svg>
                     </el-button>
+                    <el-button text @click.stop="compactCurrentSession" :title="t('chat.compact')">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                            <path d="M10 4l-2 2H5c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-3l-2-2H10z"/>
+                            <path d="M12 8l-1.5 1.5 2.5 2.5-2.5 2.5L12 16l4-4-4-4z" opacity="0.85"/>
+                        </svg>
+                    </el-button>
                     <el-button text @click.stop="toggleFullscreen" :title="fullscreen ? (currentLang === 'zh' ? '还原' : 'Restore') : (currentLang === 'zh' ? '全屏' : 'Fullscreen')">
                         <svg v-if="fullscreen" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                             <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>
@@ -219,6 +225,7 @@ const ChatWidgetSetup = (props, { emit }) => {
     const {
         createNewChat, selectChatSession, deleteChatSession, clearAllChatSessions,
         sendChatMessage, sendQuickPrompt, removeSelectedChatPaper,
+        compactCurrentSession,
         formatChatMessage, formatChatTime, handleChatScroll,
         copyMessage, regenerateMessage
     } = chatStore;
@@ -273,7 +280,7 @@ const ChatWidgetSetup = (props, { emit }) => {
         showChatSidebar, chatSessions, currentChatSession, chatMessages, chatInput,
         selectedChatPapers, chatTyping, chatProgress, chatMessagesContainer, quickPrompts,
         t, createNewChat, selectChatSession, deleteChatSession, clearAllChatSessions,
-        sendChatMessage, sendQuickPrompt, removeSelectedChatPaper,
+        sendChatMessage, sendQuickPrompt, removeSelectedChatPaper, compactCurrentSession,
         formatChatMessage, formatChatTime, handleChatScroll,
         copyMessage, regenerateMessage,
         onMouseDown, toggleFullscreen, onResizeStart
