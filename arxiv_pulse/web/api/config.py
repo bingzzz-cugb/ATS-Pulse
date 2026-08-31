@@ -311,3 +311,87 @@ async def initial_sync():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/profiles/generate")
+async def generate_profile_plan(data: dict):
+    """AI 生成检索计划（不落库，仅预览）"""
+    from arxiv_pulse.services.profile_service import generate_retrieval_plan
+
+    description = (data.get("description") or "").strip()
+    if not description:
+        raise HTTPException(status_code=422, detail="description 不能为空")
+    return generate_retrieval_plan(description)
+
+
+@router.get("/profiles")
+async def list_profiles():
+    from arxiv_pulse.models import ResearchProfile
+
+    with get_db().get_session() as session:
+        return [p.to_dict() for p in session.query(ResearchProfile).order_by(ResearchProfile.id).all()]
+
+
+@router.post("/profiles")
+async def create_profile(data: dict):
+    from arxiv_pulse.models import ResearchProfile
+    from arxiv_pulse.services.profile_service import default_journals, generate_retrieval_plan
+
+    name = (data.get("name") or "").strip()
+    description = (data.get("description") or "").strip()
+    if not name or not description:
+        raise HTTPException(status_code=422, detail="name 与 description 必填")
+    plan = data.get("retrieval_plan") or generate_retrieval_plan(description)
+    journals = data.get("journals") or default_journals()
+    sources = data.get("sources") or {"arxiv": True, "crossref": True, "s2": True}
+    with get_db().get_session() as session:
+        profile = ResearchProfile(
+            name=name,
+            description=description,
+            retrieval_plan=json.dumps(plan, ensure_ascii=False),
+            journals=json.dumps(journals, ensure_ascii=False),
+            sources=json.dumps(sources),
+        )
+        session.add(profile)
+        session.commit()
+        session.refresh(profile)
+        return profile.to_dict()
+
+
+@router.put("/profiles/{profile_id}")
+async def update_profile(profile_id: int, data: dict):
+    from arxiv_pulse.models import ResearchProfile
+
+    with get_db().get_session() as session:
+        profile = session.query(ResearchProfile).filter_by(id=profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        if "name" in data and data["name"] is not None:
+            profile.name = data["name"]
+        if "description" in data and data["description"] is not None:
+            profile.description = data["description"]
+        if "retrieval_plan" in data and data["retrieval_plan"]:
+            profile.retrieval_plan = json.dumps(data["retrieval_plan"], ensure_ascii=False)
+        if "journals" in data and data["journals"] is not None:
+            profile.journals = json.dumps(data["journals"], ensure_ascii=False)
+        if "sources" in data and data["sources"] is not None:
+            profile.sources = json.dumps(data["sources"])
+        if "enabled" in data:
+            profile.enabled = bool(data["enabled"])
+        session.commit()
+        session.refresh(profile)
+        return profile.to_dict()
+
+
+@router.delete("/profiles/{profile_id}")
+async def delete_profile(profile_id: int):
+    from arxiv_pulse.models import PaperProfile, ResearchProfile
+
+    with get_db().get_session() as session:
+        profile = session.query(ResearchProfile).filter_by(id=profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        session.query(PaperProfile).filter_by(profile_id=profile_id).delete()
+        session.delete(profile)
+        session.commit()
+        return {"success": True}

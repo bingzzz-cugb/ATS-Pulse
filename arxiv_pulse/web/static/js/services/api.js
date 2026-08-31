@@ -20,7 +20,23 @@ const API = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         }),
-        initSync: () => fetch(`${API_BASE}/config/init/sync`, { method: 'POST' })
+        initSync: () => fetch(`${API_BASE}/config/init/sync`, { method: 'POST' }),
+        profiles: {
+            list: () => fetch(`${API_BASE}/config/profiles`),
+            generate: (description) => fetch(`${API_BASE}/config/profiles/generate`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ description })
+            }),
+            create: (data) => fetch(`${API_BASE}/config/profiles`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }),
+            update: (id, data) => fetch(`${API_BASE}/config/profiles/${id}`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }),
+            remove: (id) => fetch(`${API_BASE}/config/profiles/${id}`, { method: 'DELETE' })
+        }
     },
 
     stats: {

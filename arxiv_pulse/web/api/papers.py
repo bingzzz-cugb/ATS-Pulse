@@ -305,6 +305,7 @@ async def update_recent_papers(
     need_sync: bool = Query(True),
     categories: str | None = Query(None, description="Comma-separated category codes"),
     sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
+    profile_ids: str | None = Query(None, description="Comma-separated research profile ids"),
     limit: int | None = Query(None, ge=1, le=200, description="Override config limit"),
 ):
     """SSE endpoint: sync -> query -> cache recent papers"""
@@ -327,6 +328,7 @@ async def update_recent_papers(
 
         category_list = [c.strip() for c in categories.split(",")] if categories else []
         source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else []
+        profile_list = [int(x) for x in profile_ids.split(",") if x.strip().isdigit()] if profile_ids else []
         query_limit = limit or Config.RECENT_PAPERS_LIMIT
         sync_years = Config.YEARS_BACK
 
@@ -337,7 +339,7 @@ async def update_recent_papers(
 
         cancelled_flag = _register_update_task(task_id)
 
-        if not source_list:
+        if not source_list and not profile_list:
             _unregister_update_task(task_id)
             yield sse_event("log", {"message": "请选择更新来源"})
             return
@@ -358,7 +360,49 @@ async def update_recent_papers(
 
         total_added = 0
 
-        if need_sync:
+        if need_sync and profile_list:
+            from arxiv_pulse.models import ResearchProfile
+            from arxiv_pulse.services.profile_service import sync_profile_papers
+
+            with db.get_session() as session:
+                task = session.query(SyncTask).filter_by(id=task_id).first()
+                if task:
+                    task.status = "running"
+                    task.message = "按档案同步..."
+                    session.commit()
+                profiles = (
+                    session.query(ResearchProfile)
+                    .filter(ResearchProfile.id.in_(profile_list), ResearchProfile.enabled == True)
+                    .all()
+                )
+            if not profiles:
+                yield sse_event("log", {"message": "所选档案不存在或已停用"})
+            for prof in profiles:
+                if cancelled_flag["value"]:
+                    _unregister_update_task(task_id)
+                    yield sse_event("log", {"message": "同步已取消"})
+                    return
+                yield sse_event("log", {"message": f"开始同步档案: {prof.name}"})
+                await asyncio.sleep(0.05)
+                try:
+                    stats = await asyncio.to_thread(
+                        sync_profile_papers, prof, date_from_str, date_to_str,
+                        log_cb=lambda msg: None,
+                    )
+                except Exception as e:
+                    yield sse_event("log", {"message": f"档案同步出错: {str(e)[:100]}"})
+                    continue
+                total_added += stats["total_new"]
+                yield sse_event(
+                    "log",
+                    {
+                        "message": f"档案 {prof.name}: arXiv+{stats['arxiv_new']} / 期刊+{stats['crossref_new']} / S2+{stats['s2_new']}，共新增 {stats['total_new']} 篇"
+                    },
+                )
+            yield sse_event("log", {"message": "档案同步完成"})
+            await asyncio.sleep(0.05)
+
+        if need_sync and not profile_list:
             with db.get_session() as session:
                 task = session.query(SyncTask).filter_by(id=task_id).first()
                 if task:
