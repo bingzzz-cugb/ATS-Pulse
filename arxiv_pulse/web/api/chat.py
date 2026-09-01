@@ -9,7 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from arxiv_pulse.core import Config
@@ -19,6 +19,7 @@ from arxiv_pulse.models import (
     Paper,
     PaperContentCache,
 )
+from arxiv_pulse.services.pdf_service import resolve_pdf_source
 from arxiv_pulse.utils import sse_event, sse_response
 from arxiv_pulse.web.dependencies import get_db
 
@@ -99,6 +100,59 @@ async def rename_session(session_id: int, data: RenameSessionRequest):
         return chat_session.to_dict()
 
 
+@router.post("/pdf/upload")
+async def upload_paper_pdf(
+    file: UploadFile = File(...),
+    pid: str = Form(...),
+    title: str | None = Form(None),
+):
+    """手动上传论文 PDF，解析全文并缓存（重复上传覆盖缓存）"""
+    import fitz
+
+    if not pid:
+        raise HTTPException(status_code=400, detail="pid required")
+    content_bytes = await file.read()
+    if len(content_bytes) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF too large")
+
+    # 校验后缀/魔数
+    if not pid.startswith(("http", "10.")):
+        pass
+    if content_bytes[:5] != b"%PDF-":
+        raise HTTPException(status_code=400, detail="not a PDF file")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content_bytes)
+        tmp_path = tmp.name
+
+    try:
+        doc = fitz.open(tmp_path)
+        full_text = ""
+        for page in doc:
+            full_text += page.get_text()
+        doc.close()
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise HTTPException(status_code=400, detail=f"PDF parse failed: {str(e)[:80]}")
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+    full_text = full_text.strip()
+    if not full_text:
+        raise HTTPException(status_code=400, detail="PDF has no extractable text")
+
+    with get_db().get_session() as session:
+        cache = session.query(PaperContentCache).filter_by(arxiv_id=pid).first()
+        if cache:
+            cache.full_text = full_text
+        else:
+            session.add(PaperContentCache(arxiv_id=pid, full_text=full_text))
+        session.commit()
+
+    return {"success": True, "text_length": len(full_text)}
+
+
 @router.post("/sessions/{session_id}/send")
 async def send_message(session_id: int, data: SendMessageRequest):
     """发送消息，SSE 流式返回 AI 回复"""
@@ -119,6 +173,7 @@ async def send_message(session_id: int, data: SendMessageRequest):
                 "parsing_progress": lambda i, t: f"Parsing... ({i}/{t} pages)",
                 "parsed": lambda l, p: f"Parse complete: {l} chars, {p} pages",
                 "download_failed": lambda s: f"Download failed: HTTP {s}",
+                "manual_required": lambda a: f"Paper {a} is not open access - please download the PDF and upload it manually for AI analysis",
                 "process_failed": lambda e: f"Processing failed: {e[:50]}",
                 "papers_ready": "Paper content ready, starting AI analysis...",
                 "ai_thinking": "AI is analyzing...",
@@ -137,6 +192,7 @@ async def send_message(session_id: int, data: SendMessageRequest):
                 "parsing_progress": lambda i, t: f"解析中... ({i}/{t} 页)",
                 "parsed": lambda l, p: f"解析完成: {l} 字符, {p} 页",
                 "download_failed": lambda s: f"下载失败: HTTP {s}",
+                "manual_required": lambda a: f"论文 {a} 非开放获取，请手动下载 PDF 后上传给 AI 分析",
                 "process_failed": lambda e: f"处理失败: {e[:50]}",
                 "papers_ready": "论文内容已准备就绪，开始 AI 分析...",
                 "ai_thinking": "AI 正在分析...",
@@ -234,8 +290,23 @@ async def send_message(session_id: int, data: SendMessageRequest):
                         await asyncio.sleep(0.2)
 
                 if not content:
-                    pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+                    # 多源 PDF 解析：arXiv 直连 / 期刊直链 / Unpaywall OA / 手动上传
+                    with get_db().get_session() as session:
+                        paper_row = session.query(Paper).filter_by(arxiv_id=arxiv_id).first()
+                    pdf_url = resolve_pdf_source(paper_row) if paper_row else None
                     try:
+                        if not pdf_url:
+                            yield sse_event(
+                                "progress",
+                                {
+                                    "stage": "manually_required",
+                                    "arxiv_id": arxiv_id,
+                                    "message": m["manual_required"](arxiv_id),
+                                },
+                            )
+                            await asyncio.sleep(0.2)
+                            continue
+
                         yield sse_event(
                             "progress",
                             {"stage": "downloading", "arxiv_id": arxiv_id, "message": m["downloading"](arxiv_id)},
@@ -243,7 +314,7 @@ async def send_message(session_id: int, data: SendMessageRequest):
                         await asyncio.sleep(0.1)
 
                         response = requests.get(pdf_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
-                        if response.status_code == 200:
+                        if response.status_code == 200 and response.content[:5] == b"%PDF-":
                             file_size = len(response.content)
                             yield sse_event(
                                 "progress",
@@ -324,10 +395,12 @@ async def send_message(session_id: int, data: SendMessageRequest):
                     with get_db().get_session() as session:
                         paper = session.query(Paper).filter_by(arxiv_id=arxiv_id).first()
                         title = paper.title if paper else arxiv_id
+                        is_arxiv = bool(paper and paper.source == "arxiv")
+                    id_label = f"arXiv ID: {arxiv_id}" if is_arxiv else f"DOI: {arxiv_id}"
                     paper_header = (
-                        f"\n\n---\n### 论文: {title}\n### arXiv ID: {arxiv_id}\n\n"
+                        f"\n\n---\n### 论文: {title}\n### {id_label}\n\n"
                         if lang == "zh"
-                        else f"\n\n---\n### Paper: {title}\n### arXiv ID: {arxiv_id}\n\n"
+                        else f"\n\n---\n### Paper: {title}\n### {id_label}\n\n"
                     )
                     papers_content += f"{paper_header}{content[:10000]}"
 

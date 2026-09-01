@@ -35,7 +35,10 @@ const API = {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             }),
-            remove: (id) => fetch(`${API_BASE}/config/profiles/${id}`, { method: 'DELETE' })
+            remove: (id) => fetch(`${API_BASE}/config/profiles/${id}`, { method: 'DELETE' }),
+            journals: (q) => fetch(`${API_BASE}/config/profiles/journals?q=${encodeURIComponent(q || '')}&limit=50`),
+            journalStatus: () => fetch(`${API_BASE}/config/profiles/journals/status`),
+            journalRefresh: () => fetch(`${API_BASE}/config/profiles/journals/refresh`, { method: 'POST' })
         }
     },
 
@@ -56,7 +59,8 @@ const API = {
             body: JSON.stringify(data)
         }),
         quick: (params, signal) => fetch(`${API_BASE}/papers/quick?${params}`, { signal }),
-        pdf: (arxivId) => fetch(`${API_BASE}/papers/pdf/${arxivId}`)
+        pdf: (arxivId) => fetch(`${API_BASE}/papers/pdf/${arxivId}`),
+        summarize: (id) => fetch(`${API_BASE}/papers/${id}/summarize`, { method: 'POST' })
     },
 
     collections: {
@@ -135,7 +139,14 @@ const API = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             }),
-            compact: (id) => fetch(`${API_BASE}/chat/sessions/${id}/compact`, { method: 'POST' })
+            compact: (id) => fetch(`${API_BASE}/chat/sessions/${id}/compact`, { method: 'POST' }),
+            uploadPdf: (pid, file, title) => {
+                const form = new FormData();
+                form.append('pid', pid);
+                form.append('file', file);
+                if (title) form.append('title', title);
+                return fetch(`${API_BASE}/chat/pdf/upload`, { method: 'POST', body: form });
+            }
         }
     }
 };

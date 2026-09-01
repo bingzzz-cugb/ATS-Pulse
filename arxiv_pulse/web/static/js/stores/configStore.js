@@ -198,6 +198,7 @@ const useConfigStore = defineStore('config', () => {
             const data = await res.json();
             settingsConfig.value = {
                 ai_api_key: data.ai_api_key || '',
+                s2_api_key: data.s2_api_key || '',
                 ai_model: data.ai_model || 'DeepSeek-V3.2',
                 ai_base_url: data.ai_base_url || 'https://llmapi.paratera.com',
                 selected_fields: data.selected_fields || [],
@@ -232,6 +233,22 @@ const useConfigStore = defineStore('config', () => {
         }
     }
     
+    async function saveS2Key() {
+        savingSettings.value = true;
+        try {
+            const res = await API.config.update({ s2_api_key: settingsConfig.value.s2_api_key });
+            if (res.ok) {
+                ElementPlus.ElMessage.success(currentLang.value === 'zh' ? 'S2 API Key 已更新' : 'S2 API Key updated');
+            } else {
+                ElementPlus.ElMessage.error(currentLang.value === 'zh' ? '更新失败' : 'Update failed');
+            }
+        } catch (e) {
+            ElementPlus.ElMessage.error(currentLang.value === 'zh' ? '更新失败' : 'Update failed');
+        } finally {
+            savingSettings.value = false;
+        }
+    }
+
     async function testAIConnection() {
         testingAI.value = true;
         try {
@@ -365,7 +382,7 @@ const useConfigStore = defineStore('config', () => {
         filteredCategories, advancedQueriesLines, parsedCodeResult,
         setLanguage, setTheme, toggleTheme, t, getFieldTranslation,
         checkInitStatus, fetchCategories, testSetupAI, fetchConfig,
-        saveApiKey, testAIConnection, saveSettings,
+        saveApiKey, saveS2Key, testAIConnection, saveSettings,
         openFieldSelector, toggleFieldSelectorGroup, toggleTempField,
         removeFromTempSelection, clearTempSelection, confirmFieldSelection
     };

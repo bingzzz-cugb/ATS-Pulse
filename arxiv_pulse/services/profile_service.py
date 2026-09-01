@@ -91,6 +91,75 @@ def _clean_title(title) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
+# 期刊过滤停用词：主题判别力过弱的高频词元踢掉，否则过滤形同虚设
+_JOURNAL_STOP_TERMS = {
+    "remote", "sensing", "satellite", "image", "images", "imagery", "data",
+    "model", "models", "based", "using", "analysis", "results", "result",
+    "method", "methods", "mapping", "map", "maps", "assessment", "monitoring",
+    "algorithm", "algorithms", "new", "study", "paper", "the", "and", "are",
+    "of", "in", "to", "a", "an", "on", "by", "with", "from", "for", "use",
+    "used", "retrieval", "estimation", "object", "land", "surface", "water",
+    "climate", "forest", "few", "mechanism",
+}
+
+
+def _journal_filter_terms(plan: dict, s2_query: str) -> list[str]:
+    """从检索计划提取期刊论文的关键词过滤词元（无配置则返回空 = 不过滤）"""
+    raw = plan.get("keywords") or []
+    source_strs = list(raw) if raw else (s2_query.split() if s2_query else [])
+    terms = set()
+    for s in source_strs:
+        for t in re.split(r"[^a-zA-Z0-9]+", str(s).lower()):
+            if len(t) < 3 or t in _JOURNAL_STOP_TERMS:
+                continue
+            terms.add(t)
+    return sorted(terms)
+
+
+def _paper_origin(paper) -> str:
+    """识别论文来自哪个检索来源（S2 收录项带 s2: 前缀搜索标记）"""
+    if (paper.search_query or "").startswith("s2:"):
+        return "s2"
+    if paper.source == "arxiv":
+        return "arxiv"
+    return "crossref"
+
+
+def _reconcile_source_links(db, profile, sources: dict, log_cb) -> None:
+    """来源被关闭的档案：解除该来源论文与档案的关联（论文保留，视图即来源开关状态）"""
+    if sources.get("arxiv", True) and sources.get("crossref", True) and sources.get("s2", True):
+        return
+    from arxiv_pulse.models import Paper, PaperProfile
+
+    try:
+        with db.get_session() as session:
+            links = (
+                session.query(Paper, PaperProfile)
+                .join(PaperProfile, PaperProfile.paper_id == Paper.id)
+                .filter(PaperProfile.profile_id == profile.id)
+                .all()
+            )
+            remove_ids = [link.id for paper, link in links if not sources.get(_paper_origin(paper), True)]
+            if remove_ids:
+                session.query(PaperProfile).filter(PaperProfile.id.in_(remove_ids)).delete(
+                    synchronize_session=False
+                )
+                session.commit()
+                log_cb(f"来源对账: 解除 {len(remove_ids)} 篇已关闭来源论文的档案关联")
+    except Exception:
+        logger.exception("来源关联整理失败")
+
+
+def _attach_existing_by_doi(db, doi, profile_id) -> None:
+    """已入库（如先前全局同步入库）的期刊论文补挂档案关联"""
+    from arxiv_pulse.models import Paper
+
+    with db.get_session() as session:
+        paper = session.query(Paper).filter(Paper.doi == doi).first()
+        if paper:
+            attach_profile(db, paper, profile_id)
+
+
 def sync_profile_papers(profile, date_from=None, date_to=None, source_override=None, log_cb=lambda msg: None) -> dict:
     """按档案三源检索指定区间论文并入库，返回各源统计"""
     from arxiv_pulse.core import Database
@@ -111,6 +180,8 @@ def sync_profile_papers(profile, date_from=None, date_to=None, source_override=N
     sources = dict(profile.sources_json())
     if source_override:
         sources.update(source_override)
+
+    _reconcile_source_links(db, profile, sources, log_cb)
 
     result = {"profile": profile.name, "arxiv_new": 0, "crossref_new": 0, "s2_new": 0, "total_new": 0, "found": 0}
 
@@ -136,22 +207,38 @@ def sync_profile_papers(profile, date_from=None, date_to=None, source_override=N
         pass
 
     if sources.get("crossref", True):
+        from arxiv_pulse.crawler.openalex import _uninvert_abstract, save_openalex_item, search_openalex_items
+
+        filter_terms = _journal_filter_terms(plan, s2_query)
         for pub in journals:
-            items = fetch_crossref_items(pub["issn"], days_back=7, rows=50, date_from=date_from, date_to=date_to)
+            items = search_openalex_items(
+                pub["issn"], date_from=date_from, date_to=date_to, rows=200, log_cb=log_cb
+            )
             saved = 0
+            skipped = 0
             for item in items:
-                doi = (item.get("DOI") or "").lower()
-                if not doi or db.paper_exists(doi):
+                doi = (item.get("doi") or "").lower().replace("https://doi.org/", "")
+                if not doi:
                     continue
-                title = _clean_title(item.get("title")).lower()
+                title = (item.get("title") or "").lower()
+                abstract = _uninvert_abstract(item.get("abstract_inverted_index")).lower()
                 if exclude_words and any(w and w in title for w in exclude_words):
                     continue
-                saved_paper = save_doi_paper(item, pub, db=db)
+                if filter_terms:
+                    # 关键词包含过滤：标题或摘要命中任一词元才算该档案主题的文章
+                    text = title + " " + abstract
+                    if not any(re.search(rf"\b{re.escape(t)}\b", text) for t in filter_terms):
+                        skipped += 1
+                        continue
+                if db.paper_exists(doi):
+                    # 已入库的期刊论文补挂档案关联（save_ 内部已做 attach，这里仅处理计数语义）
+                    _attach_existing_by_doi(db, doi, profile.id)
+                    continue
+                saved_paper = save_openalex_item(db, item, pub, profile_id=profile.id)
                 if saved_paper is not None:
                     saved += 1
-                    attach_profile(db, saved_paper, profile.id)
-            if saved:
-                log_cb(f"期刊 {pub.get('name', pub['key'])[:30]}: 新增 {saved} 篇")
+            if saved or skipped:
+                log_cb(f"期刊 {pub.get('name', pub['key'])[:30]}: 新增 {saved} 篇，关键词过滤 {skipped} 篇")
             result["crossref_new"] += saved
             result["found"] += len(items)
 
@@ -159,7 +246,7 @@ def sync_profile_papers(profile, date_from=None, date_to=None, source_override=N
         from arxiv_pulse.crawler.s2 import save_s2_item, search_s2_items
 
         s2_new = 0
-        for item in search_s2_items(s2_query, date_from, date_to):
+        for item in search_s2_items(s2_query, date_from, date_to, api_key=Config.S2_API_KEY, log_cb=log_cb):
             if exclude_words and any(w and w in str(item.get("title") or "").lower() for w in exclude_words):
                 continue
             paper = save_s2_item(db, item, profile.id)

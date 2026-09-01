@@ -40,6 +40,14 @@ const SettingsDrawerTemplate = `
                         </template>
                     </el-input>
                 </el-form-item>
+                <el-form-item :label="t('settings.s2ApiKey')">
+                    <el-input v-model="settingsConfig.s2_api_key" type="password" show-password>
+                        <template #append>
+                            <el-button type="primary" @click="saveS2Key" :loading="savingSettings">{{ t('settings.updateKey') }}</el-button>
+                        </template>
+                    </el-input>
+                    <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">{{ t('settings.s2ApiKeyHint') }}</p>
+                </el-form-item>
                 <el-form-item :label="t('settings.modelName')">
                     <el-input v-model="settingsConfig.ai_model" />
                 </el-form-item>
@@ -109,7 +117,7 @@ const SettingsDrawerSetup = (props) => {
     const profileStore = useProfileStore();
 
     const { settingsConfig, savingSettings, testingAI, currentLang, currentTheme } = storeToRefs(configStore);
-    const { t, saveApiKey, testAIConnection, setLanguage, setTheme } = configStore;
+    const { t, saveApiKey, saveS2Key, testAIConnection, setLanguage, setTheme } = configStore;
 
     onMounted(() => {
         profileStore.fetchProfiles();
@@ -174,6 +182,7 @@ const SettingsDrawerSetup = (props) => {
         currentTheme,
         t,
         saveApiKey,
+        saveS2Key,
         testAIConnection,
         aiLanguageOptions,
         initYearOptions,

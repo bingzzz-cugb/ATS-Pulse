@@ -20,12 +20,34 @@ const ProfileDialogTemplate = `
                     <el-input size="small" v-model="plan.s2_query" :placeholder="t('settings.profileS2Ph')" style="margin-top: 4px;"></el-input>
                 </div>
             </el-form-item>
+            <el-form-item v-if="plan" :label="t('settings.profileKeywords')">
+                <div style="width: 100%;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px;">
+                        <el-tag v-for="(kw, i) in plan.keywords" :key="i" closable @close="removeKeyword(i)">{{ kw }}</el-tag>
+                        <el-tag v-if="!plan.keywords || plan.keywords.length === 0" type="info" style="border-style: dashed;">{{ t('settings.profileJournalNone') }}</el-tag>
+                    </div>
+                    <el-input size="small" v-model="keywordInput" :placeholder="t('settings.profileKeywordsPh')" @keyup.enter="addKeyword"></el-input>
+                </div>
+            </el-form-item>
             <el-form-item :label="t('settings.profileJournals')">
-                <div style="width: 100%; display: flex; flex-wrap: wrap; gap: 8px;">
-                    <el-checkbox v-for="j in journalTemplates" :key="j.issn" v-model="j.enabled">{{ j.name }}</el-checkbox>
-                    <el-input v-model="customJournalName" size="small" :placeholder="t('settings.profileJournalName')" style="width: 160px;"></el-input>
-                    <el-input v-model="customJournalIssn" size="small" placeholder="ISSN" style="width: 130px;"></el-input>
-                    <el-button size="small" @click="addCustomJournal">{{ t('common.add') }}</el-button>
+                <div style="width: 100%;">
+                    <el-select filterable remote :remote-method="doSearchJournals" :loading="catalogLoading"
+                               v-model="pickedIssn" :placeholder="t('settings.profileJournalPickPh')"
+                               style="width: 100%;" @change="addFromCatalog">
+                        <el-option v-for="j in catalogItems" :key="j.issn" :value="j.issn" :label="j.title">
+                            <div style="display: flex; justify-content: space-between; gap: 10px;">
+                                <span>{{ j.title }}</span>
+                                <span style="flex-shrink: 0; font-size: 11px; color: var(--text-muted);">{{ (j.quartile ? j.quartile + ' · ' : '') + (j.publisher || '') }}</span>
+                            </div>
+                        </el-option>
+                    </el-select>
+                    <div v-if="journalSyncing" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                        {{ t('settings.profileJournalSyncing') }} ({{ journalCatalogCount }})
+                    </div>
+                    <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
+                        <el-tag v-for="(j, i) in journalTemplates" :key="j.issn" closable @close="removeJournal(i)">{{ j.name }}</el-tag>
+                        <el-tag v-if="journalTemplates.length === 0" type="info" style="border-style: dashed;">{{ t('settings.profileJournalNone') }}</el-tag>
+                    </div>
                 </div>
             </el-form-item>
             <el-form-item :label="t('settings.profileSources')">
@@ -54,8 +76,13 @@ const ProfileDialogSetup = (props, { emit }) => {
         { key: 'tgrs', name: 'IEEE TGRS', issn: '1558-0644', enabled: true },
         { key: 'science', name: 'Science', issn: '0036-8075', enabled: true }
     ]);
-    const customJournalName = ref('');
-    const customJournalIssn = ref('');
+
+    const catalogItems = ref([]);
+    const catalogLoading = ref(false);
+    const journalSyncing = ref(false);
+    const journalCatalogCount = ref(0);
+    const pickedIssn = ref('');
+    let catalogTimer = null;
 
     watch(() => props.show, (v) => {
         if (!v) return;
@@ -69,28 +96,68 @@ const ProfileDialogSetup = (props, { emit }) => {
                 { key: 'tgrs', name: 'IEEE TGRS', issn: '1558-0644', enabled: true },
                 { key: 'science', name: 'Science', issn: '0036-8075', enabled: true }
             ];
-            return;
+        } else {
+            const p = profileStore.profiles.find(x => x.id === editing);
+            if (!p) return;
+            name.value = p.name;
+            description.value = p.description || '';
+            plan.value = p.retrieval_plan || null;
+            sources.arxiv = p.sources.arxiv !== false;
+            sources.crossref = p.sources.crossref !== false;
+            sources.s2 = p.sources.s2 !== false;
+            journalTemplates.value = (p.journals && p.journals.length ? p.journals : journalTemplates.value)
+                .filter(j => j.enabled !== false)
+                .map(j => ({ key: j.key, name: j.name, issn: j.issn, enabled: true }));
         }
-        const p = profileStore.profiles.find(x => x.id === editing);
-        if (!p) return;
-        name.value = p.name;
-        description.value = p.description || '';
-        plan.value = p.retrieval_plan || null;
-        sources.arxiv = p.sources.arxiv !== false;
-        sources.crossref = p.sources.crossref !== false;
-        sources.s2 = p.sources.s2 !== false;
-        journalTemplates.value = (p.journals && p.journals.length ? p.journals : journalTemplates.value).map(j => ({
-            key: j.key, name: j.name, issn: j.issn, enabled: j.enabled !== false
-        }));
+        doSearchJournals('');
+    }, { immediate: true });
+
+    onUnmounted(() => {
+        if (catalogTimer) { clearInterval(catalogTimer); catalogTimer = null; }
     });
 
-    function addCustomJournal() {
-        const issn = customJournalIssn.value.trim();
-        const nm = customJournalName.value.trim();
-        if (!issn || !nm) return;
-        journalTemplates.value.push({ key: 'custom_' + issn, name: nm, issn, enabled: true });
-        customJournalIssn.value = '';
-        customJournalName.value = '';
+    async function doSearchJournals(q = '') {
+        catalogLoading.value = true;
+        try {
+            const data = await profileStore.searchJournalCatalog(q);
+            catalogItems.value = data.items || [];
+            journalSyncing.value = !!data.syncing;
+            journalCatalogCount.value = data.count || 0;
+            if (data.syncing && !catalogTimer) {
+                catalogTimer = setInterval(pollCatalogStatus, 1500);
+            }
+        } catch (e) {
+            console.error('期刊目录搜索失败:', e);
+        } finally {
+            catalogLoading.value = false;
+        }
+    }
+
+    async function pollCatalogStatus() {
+        const st = await profileStore.journalCatalogStatus();
+        journalSyncing.value = !!st.syncing;
+        journalCatalogCount.value = st.count || 0;
+        if (!st.syncing && catalogTimer) {
+            clearInterval(catalogTimer);
+            catalogTimer = null;
+            doSearchJournals('');
+        }
+    }
+
+    function addFromCatalog(issn) {
+        const j = catalogItems.value.find(x => x.issn === issn);
+        if (j) {
+            if (journalTemplates.value.some(x => x.issn === j.issn)) {
+                ElementPlus.ElMessage.info(configStore.currentLang === 'zh' ? '该期刊已在列表中' : 'Journal already added');
+            } else {
+                journalTemplates.value.push({ key: 'cat_' + j.issn, name: j.title, issn: j.issn, enabled: true });
+            }
+        }
+        pickedIssn.value = '';
+    }
+
+    function removeJournal(i) {
+        journalTemplates.value.splice(i, 1);
     }
 
     async function doGenerate() {
@@ -103,6 +170,18 @@ const ProfileDialogSetup = (props, { emit }) => {
         } finally {
             generating.value = false;
         }
+    }
+
+    const keywordInput = ref('');
+    function addKeyword() {
+        const kw = keywordInput.value.trim();
+        if (!kw) return;
+        if (!plan.value.keywords) plan.value.keywords = [];
+        if (!plan.value.keywords.includes(kw)) plan.value.keywords.push(kw);
+        keywordInput.value = '';
+    }
+    function removeKeyword(i) {
+        if (plan.value && plan.value.keywords) plan.value.keywords.splice(i, 1);
     }
 
     async function save() {
@@ -135,6 +214,7 @@ const ProfileDialogSetup = (props, { emit }) => {
 
     const t = (key, params) => configStore.t(key, params);
     return { show: props.show, editing: props.editing, name, description, plan, generating, saving,
-             sources, journalTemplates, customJournalName, customJournalIssn,
-             addCustomJournal, doGenerate, save, t };
+             sources, journalTemplates, doSearchJournals, catalogItems, catalogLoading,
+             journalSyncing, journalCatalogCount, pickedIssn, addFromCatalog, removeJournal,
+             doGenerate, save, t, keywordInput, addKeyword, removeKeyword };
 };

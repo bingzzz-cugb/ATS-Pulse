@@ -166,15 +166,21 @@ const ChatWidgetTemplate = `
                     
                     <div v-if="selectedChatPapers.length > 0" class="selected-papers-bar">
                         <span>{{ t('chat.selectedPapers', { count: selectedChatPapers.length }) }}</span>
-                        <el-tag 
-                            v-for="paper in selectedChatPapers" 
-                            :key="paper.arxiv_id" 
-                            closable 
+                        <el-tag
+                            v-for="paper in selectedChatPapers"
+                            :key="paper.arxiv_id"
+                            closable
                             size="small"
                             @close="removeSelectedChatPaper(paper.arxiv_id)"
                         >
                             {{ paper.title?.slice(0, 20) }}...
                         </el-tag>
+                        <el-button size="small" text type="primary" @click="uploadPdfForSelected" :loading="uploadingPdf">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="margin-right: 4px;">
+                                <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>
+                            </svg>
+                            {{ t('chat.uploadPdf') }}
+                        </el-button>
                     </div>
                     
                     <div class="chat-input-area">
@@ -263,19 +269,55 @@ const ChatWidgetSetup = (props, { emit }) => {
         if (e.target.closest('.collapse-btn') || e.target.closest('.el-button') || e.target.closest('.chat-resize-handle')) return;
         emit('start-drag', e);
     }
-    
+
     function toggleFullscreen() {
         emit('update:fullscreen', !props.fullscreen);
     }
-    
+
     function onResizeStart(direction, e) {
         emit('start-resize', direction, e);
     }
-    
+
+    const uploadingPdf = ref(false);
+    async function uploadPdfForSelected() {
+        if (uploadingPdf.value || !selectedChatPapers.value.length) return;
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.pdf';
+        fileInput.onchange = async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            uploadingPdf.value = true;
+            try {
+                const paper = selectedChatPapers.value[0];
+                const form = new FormData();
+                form.append('pid', paper.arxiv_id);
+                form.append('file', file);
+                const res = await fetch('/api/chat/pdf/upload', { method: 'POST', body: form });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    ElementPlus.ElMessage.success(data.text_length
+                        ? `${t('chat.uploadPdfDone')} (${data.text_length} 字符)`
+                        : (t('chat.uploadPdfDone') || '上传成功'));
+                    emit('pdf-uploaded', paper.arxiv_id);
+                } else {
+                    ElementPlus.ElMessage.error(data.detail || '上传失败');
+                }
+            } catch (e) {
+                console.error('PDF 上传失败:', e);
+                ElementPlus.ElMessage.error('上传失败: ' + (e.message || e));
+            } finally {
+                uploadingPdf.value = false;
+            }
+        };
+        fileInput.click();
+    }
+
     onMounted(() => {
         renderLatexInMessages();
     });
-    
+
     return {
         showChatSidebar, chatSessions, currentChatSession, chatMessages, chatInput,
         selectedChatPapers, chatTyping, chatProgress, chatMessagesContainer, quickPrompts,
@@ -283,6 +325,7 @@ const ChatWidgetSetup = (props, { emit }) => {
         sendChatMessage, sendQuickPrompt, removeSelectedChatPaper, compactCurrentSession,
         formatChatMessage, formatChatTime, handleChatScroll,
         copyMessage, regenerateMessage,
-        onMouseDown, toggleFullscreen, onResizeStart
+        onMouseDown, toggleFullscreen, onResizeStart,
+        uploadingPdf, uploadPdfForSelected
     };
 };

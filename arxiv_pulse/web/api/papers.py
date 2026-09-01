@@ -401,14 +401,25 @@ async def update_recent_papers(
                     return
                 yield sse_event("log", {"message": f"开始同步档案: {prof.name}"})
                 await asyncio.sleep(0.05)
+                import queue as _queue
+
+                log_q = _queue.Queue()
+                sync_task = asyncio.create_task(
+                    asyncio.to_thread(sync_profile_papers, prof, date_from_str, date_to_str, log_cb=log_q.put)
+                )
+                while not sync_task.done():
+                    try:
+                        yield sse_event("log", {"message": f"  {log_q.get_nowait()}"})
+                    except _queue.Empty:
+                        pass
+                    await asyncio.sleep(0.2)
                 try:
-                    stats = await asyncio.to_thread(
-                        sync_profile_papers, prof, date_from_str, date_to_str,
-                        log_cb=lambda msg: None,
-                    )
+                    stats = sync_task.result()
                 except Exception as e:
                     yield sse_event("log", {"message": f"档案同步出错: {str(e)[:100]}"})
                     continue
+                while not log_q.empty():
+                    yield sse_event("log", {"message": f"  {log_q.get_nowait()}"})
                 total_added += stats["total_new"]
                 yield sse_event(
                     "log",
@@ -504,9 +515,17 @@ async def update_recent_papers(
                 cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
                 query = session.query(Paper).filter(Paper.published >= cutoff)
 
-            source_cond = _build_source_cond(source_list, category_list)
-            if source_cond is not None:
-                query = query.filter(source_cond)
+            if profile_list:
+                # 档案场景：结果仅限所选档案关联的论文（来源依据档案自身设置）
+                from arxiv_pulse.models import PaperProfile
+
+                query = query.filter(
+                    Paper.id.in_(session.query(PaperProfile.paper_id).filter(PaperProfile.profile_id.in_(profile_list)))
+                )
+            else:
+                source_cond = _build_source_cond(source_list, category_list)
+                if source_cond is not None:
+                    query = query.filter(source_cond)
 
             total_count = query.count()
             papers = query.order_by(Paper.published.desc()).limit(query_limit).all()
@@ -515,32 +534,12 @@ async def update_recent_papers(
         yield sse_event("log", {"message": f"找到 {total_count} 篇论文，加载前 {len(papers)} 篇"})
         await asyncio.sleep(0.1)
 
-        summarized_count = 0
-        figure_count = 0
-
+        # 更新仅入库+展示；AI 总结与图片按需在卡片「展开」时生成
         for i, paper in enumerate(papers):
             if cancelled_flag["value"]:
                 _unregister_update_task(task_id)
                 yield sse_event("log", {"message": "更新已取消"})
                 return
-            if not paper.summarized:
-                yield sse_event("log", {"message": f"[{i + 1}/{len(papers)}] 总结论文 {paper.arxiv_id}..."})
-                await asyncio.sleep(0.05)
-                if summarize_and_cache_paper(paper):
-                    summarized_count += 1
-                    with db.get_session() as s:
-                        refreshed = s.query(Paper).filter_by(arxiv_id=paper.arxiv_id).first()
-                        if refreshed:
-                            paper = refreshed
-
-            with db.get_session() as s:
-                figure_url = get_figure_url_cached(paper.arxiv_id, s)
-            if not figure_url:
-                yield sse_event("log", {"message": f"[{i + 1}/{len(papers)}] 获取图片 {paper.arxiv_id}..."})
-                await asyncio.sleep(0.05)
-                fetch_and_cache_figure(paper.arxiv_id)
-                figure_count += 1
-
             enhanced = enhance_paper_data(paper)
             yield sse_event("result", {"paper": enhanced, "index": i + 1, "total": len(papers)})
             await asyncio.sleep(0.03)
@@ -556,8 +555,8 @@ async def update_recent_papers(
                 session.commit()
 
         # 全部处理完成后才写缓存——取消时会提前 return，不会留下过期缓存。
-        # 自定义日期区间不写缓存(缓存仅表达"最近 N 天"语义)
-        if not use_range:
+        # 自定义日期区间与档案场景不写缓存（缓存仅表达"最近 N 天全局"语义）
+        if not use_range and not profile_list:
             db.set_recent_cache(days_back=days, paper_ids=paper_ids, total_count=total_count)
             yield sse_event("log", {"message": "缓存已更新"})
             await asyncio.sleep(0.1)
@@ -568,8 +567,6 @@ async def update_recent_papers(
                 "total": total_count,
                 "loaded": len(papers),
                 "synced": total_added,
-                "summarized": summarized_count,
-                "figures": figure_count,
             },
         )
 
@@ -749,32 +746,39 @@ async def quick_fetch(q: str = Query(..., min_length=1)):
                     yield sse_event("result", {"paper": enhance_paper_data(p), "match_type": "title"})
                 yield sse_event("done", {"total": len(papers)})
                 return
-            yield sse_event("log", {"message": "arXiv 未命中，尝试 Crossref..."})
+            yield sse_event("log", {"message": "arXiv 未命中，尝试 OpenAlex..."})
             try:
-                import urllib.request as urllib_req
+                from arxiv_pulse.crawler.openalex import save_openalex_item, search_openalex_title
 
-                from arxiv_pulse.crawler.publisher import save_doi_paper
-
-                url = "https://api.crossref.org/works?" + urllib.parse.urlencode(
-                    {"query.bibliographic": q_stripped, "rows": "5", "mailto": "arxiv-pulse@example.com",
-                     "select": "DOI,title,author,abstract,container-title,published"}
-                )
-                req = urllib_req.Request(url, headers={"User-Agent": "arXiv-Pulse/1.0 (mailto:arxiv-pulse@example.com)"})
-                with urllib_req.urlopen(req, timeout=20) as resp:
-                    items = json.loads(resp.read().decode("utf-8"))["message"].get("items", [])
-                for item in items[:5]:
-                    pub = {"key": "custom", "name": "Journal",
-                           "categories": (item.get("container-title") or [""])[0] if item.get("container-title") else "Journal"}
-                    save_doi_paper(item, pub, db=db)
+                oa_items = search_openalex_title(q_stripped, rows=5)
+                if not oa_items:
+                    yield sse_event("log", {"message": "OpenAlex 未命中"})
+                    yield sse_event("done", {"total": 0})
+                    return
+                pub_map = {}
+                for item in oa_items:
+                    src = (item.get("primary_location") or {}).get("source") or {}
+                    src_name = src.get("display_name") or "Journal"
+                    pub_map[(item.get("doi") or "").lower()] = {
+                        "key": "oa_" + str(item.get("id", "").split("/")[-1]),
+                        "name": src_name,
+                        "categories": src_name,
+                        "issn": (src.get("issn") or [""])[0],
+                    }
+                    save_openalex_item(db, item, pub_map[(item.get("doi") or "").lower()])
                 with db.get_session() as s:
-                    for item in items[:5]:
-                        doi_l = (item.get("DOI") or "").lower()
+                    seen = set()
+                    for item in oa_items:
+                        doi_l = (item.get("doi") or "").lower().replace("https://doi.org/", "")
+                        if not doi_l or doi_l in seen:
+                            continue
+                        seen.add(doi_l)
                         paper = s.query(Paper).filter_by(arxiv_id=doi_l).first()
                         if paper:
                             yield sse_event("result", {"paper": enhance_paper_data(paper), "match_type": "title"})
-                yield sse_event("done", {"total": 5})
+                yield sse_event("done", {"total": len(seen)})
             except Exception as e:
-                yield sse_event("error", {"message": f"Crossref 检索失败: {str(e)[:80]}"})
+                yield sse_event("error", {"message": f"OpenAlex 检索失败: {str(e)[:80]}"})
             return
 
         yield sse_event("log", {"message": "未识别为特定文章，未在本地找到相关论文"})
@@ -1046,6 +1050,33 @@ async def get_paper(paper_id: int):
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")
         return enhance_paper_data(paper)
+
+
+@router.post("/{paper_id}/summarize")
+async def summarize_paper_on_demand(paper_id: int):
+    """卡片「展开」时按需生成 AI 总结与首图（更新流程已不再自动生成）"""
+    import asyncio
+
+    from arxiv_pulse.services.figure_service import fetch_and_cache_figure, get_figure_url_cached
+    from arxiv_pulse.services.paper_service import enhance_paper_data, summarize_and_cache_paper
+
+    with get_db().get_session() as session:
+        paper = session.query(Paper).filter_by(id=paper_id).first()
+        if not paper:
+            raise HTTPException(status_code=404, detail="Paper not found")
+
+    ok = await asyncio.to_thread(summarize_and_cache_paper, paper)
+
+    with get_db().get_session() as session:
+        paper = session.query(Paper).filter_by(id=paper_id).first()
+        figure_url = get_figure_url_cached(paper.arxiv_id, session) if paper else None
+    if paper and not figure_url:
+        await asyncio.to_thread(fetch_and_cache_figure, paper.arxiv_id)
+
+    with get_db().get_session() as session:
+        paper = session.query(Paper).filter_by(id=paper_id).first()
+        enhanced = enhance_paper_data(paper, session)
+    return {"success": bool(ok), "paper": enhanced}
 
 
 @router.get("/{paper_id}/translate")

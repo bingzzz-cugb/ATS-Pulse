@@ -21,7 +21,12 @@ def _s2_date_range(date_from: str | None, date_to: str | None) -> str:
 
 
 def search_s2_items(
-    query: str, date_from: str | None = None, date_to: str | None = None, rows: int = 25, api_key: str | None = None
+    query: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    rows: int = 25,
+    api_key: str | None = None,
+    log_cb=None,
 ) -> list[dict]:
     params = {
         "query": query,
@@ -34,11 +39,16 @@ def search_s2_items(
     headers = {"User-Agent": "arXiv-Pulse/1.0 (mailto:arxiv-pulse@example.com)"}
     if api_key:
         headers["x-api-key"] = api_key
-    for attempt in range(4):
+    # S2 限流是 5 分钟窗口级的，短重试大概率仍失败；失败要快速放行让更新流程收尾
+    for attempt in range(2):
         data = _http_get_json(url, headers, timeout=25)
         if data is not None:
             return data.get("data", [])
-        time.sleep(5 * (attempt + 1))
+        if attempt == 0 and log_cb:
+            log_cb("S2 搜索请求失败（可能限流），重试一次...")
+        time.sleep(3 * (attempt + 1))
+    if log_cb:
+        log_cb("S2 搜索仍失败（限流），跳过本次 S2 检索")
     return []
 
 
@@ -51,7 +61,7 @@ def _parse_authors(item: dict) -> str:
 
 
 def save_s2_item(db, item: dict, profile_id: int | None = None):
-    """S2 命中入库：优先 arXiv id，其次 DOI；两者皆无则跳过"""
+    """S2 命中入库：优先 arXiv id，其次 DOI；两者皆无则跳过；已存在则补挂档案关联"""
     from arxiv_pulse.models import Paper
 
     external = item.get("externalIds") or {}
@@ -63,42 +73,41 @@ def save_s2_item(db, item: dict, profile_id: int | None = None):
     entry_id = arxiv_id or doi
 
     with db.get_session() as session:
-        if session.query(Paper).filter_by(arxiv_id=entry_id).first():
-            return None
+        paper = session.query(Paper).filter_by(arxiv_id=entry_id).first()
+        if paper is None:
+            title = item.get("title") or ""
+            year = item.get("year") or datetime.now().year
+            date = item.get("publicationDate") or f"{year}-01-01"
+            try:
+                published = datetime.strptime(date[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                published = datetime(year, 1, 1, tzinfo=UTC)
 
-        title = item.get("title") or ""
-        year = item.get("year") or datetime.now().year
-        date = item.get("publicationDate") or f"{year}-01-01"
-        try:
-            published = datetime.strptime(date[:10], "%Y-%m-%d").replace(tzinfo=UTC)
-        except ValueError:
-            published = datetime(year, 1, 1, tzinfo=UTC)
+            pdf_url = (item.get("openAccessPdf") or {}).get("url")
+            if not pdf_url and doi:
+                pdf_url = f"https://doi.org/{doi}"
+            if not pdf_url and arxiv_id:
+                pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
 
-        pdf_url = (item.get("openAccessPdf") or {}).get("url")
-        if not pdf_url and doi:
-            pdf_url = f"https://doi.org/{doi}"
-        if not pdf_url and arxiv_id:
-            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-
-        paper = Paper(
-            arxiv_id=entry_id,
-            doi=doi or None,
-            title=title,
-            authors=_parse_authors(item),
-            abstract=item.get("abstract") or "",
-            categories=item.get("venue") or "",
-            primary_category=item.get("venue") or "",
-            published=published,
-            pdf_url=pdf_url,
-            journal_ref=item.get("venue") or None,
-            comment="",
-            search_query=f"s2:{item.get('paperId', '')}",
-            relevance_score=0.0,
-            source="arxiv" if arxiv_id else "doi",
-        )
-        session.add(paper)
-        session.commit()
-        session.refresh(paper)
+            paper = Paper(
+                arxiv_id=entry_id,
+                doi=doi or None,
+                title=title,
+                authors=_parse_authors(item),
+                abstract=item.get("abstract") or "",
+                categories=item.get("venue") or "",
+                primary_category=item.get("venue") or "",
+                published=published,
+                pdf_url=pdf_url,
+                journal_ref=item.get("venue") or None,
+                comment="",
+                search_query=f"s2:{item.get('paperId', '')}",
+                relevance_score=0.0,
+                source="arxiv" if arxiv_id else "doi",
+            )
+            session.add(paper)
+            session.commit()
+            session.refresh(paper)
 
     if profile_id is not None:
         from arxiv_pulse.services.profile_service import attach_profile

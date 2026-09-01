@@ -26,6 +26,7 @@ router = APIRouter()
 
 class ConfigUpdate(BaseModel):
     ai_api_key: str | None = None
+    s2_api_key: str | None = None
     ai_model: str | None = None
     ai_base_url: str | None = None
     search_queries: list[str] | None = None
@@ -66,6 +67,7 @@ async def get_config():
 
     return {
         "ai_api_key": "***" if config.get("ai_api_key") else "",
+        "s2_api_key": "***" if config.get("s2_api_key") else "",
         "ai_model": config.get("ai_model", "DeepSeek-V3.2"),
         "ai_base_url": config.get("ai_base_url", "https://llmapi.paratera.com"),
         "search_queries": db.get_search_queries(),
@@ -88,6 +90,8 @@ async def update_config(config_update: ConfigUpdate):
 
     if config_update.ai_api_key is not None and config_update.ai_api_key != "***":
         db.set_config("ai_api_key", config_update.ai_api_key)
+    if config_update.s2_api_key is not None and config_update.s2_api_key != "***":
+        db.set_config("s2_api_key", config_update.s2_api_key)
     if config_update.ai_model is not None:
         db.set_config("ai_model", config_update.ai_model)
     if config_update.ai_base_url is not None:
@@ -395,3 +399,31 @@ async def delete_profile(profile_id: int):
         session.delete(profile)
         session.commit()
         return {"success": True}
+
+
+@router.get("/profiles/journals")
+def search_journal_catalog(q: str = "", limit: int = 50):
+    """模糊搜索期刊库（标题/ISSN/缩写，远程兜底）；库空时自动后台同步"""
+    from arxiv_pulse.services.journal_catalog import ensure_catalog_synced, search_journals
+
+    db = get_db()
+    meta = ensure_catalog_synced(db)
+    cap = min(max(limit, 1), 100)
+    items = search_journals(db, q, cap) if meta["count"] else []
+    return {"items": items, "query": q, **meta}
+
+
+@router.get("/profiles/journals/status")
+async def journal_catalog_status():
+    """期刊库同步状态（弹窗轮询用）"""
+    from arxiv_pulse.services.journal_catalog import ensure_catalog_synced
+
+    return ensure_catalog_synced(get_db())
+
+
+@router.post("/profiles/journals/refresh")
+async def refresh_journal_catalog():
+    """手动触发期刊库重新同步"""
+    from arxiv_pulse.services.journal_catalog import force_sync
+
+    return force_sync(get_db())

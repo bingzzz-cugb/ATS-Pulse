@@ -78,14 +78,17 @@ def fetch_crossref_items(
     return data.get("message", {}).get("items", [])
 
 
-def fetch_s2_abstract(doi: str, retries: int = 4) -> tuple[str | None, str | None]:
+def fetch_s2_abstract(doi: str, retries: int = 4, api_key: str | None = None) -> tuple[str | None, str | None]:
     """从 Semantic Scholar 获取摘要与开放 PDF 链接，带退避重试（429 限流）"""
     url = (
         f"https://api.semanticscholar.org/graph/v1/paper/DOI:{urllib.parse.quote(doi)}"
         "?fields=title,abstract,publicationDate,venue,openAccessPdf"
     )
+    headers = dict(S2_HEADERS)
+    if api_key:
+        headers["x-api-key"] = api_key
     for attempt in range(retries):
-        data = _http_get_json(url, S2_HEADERS, timeout=20)
+        data = _http_get_json(url, headers, timeout=20)
         if data is None:
             time.sleep(3 * (attempt + 1))
             continue
@@ -179,10 +182,12 @@ def save_doi_paper(item: dict, pub: dict, s2_result: tuple[str | None, str | Non
 def sync_publisher(pub: dict, days_back: int = 7, limit: int = 200,
                    cancel_check: Callable[[], bool] | None = None,
                    date_from: str | None = None, date_to: str | None = None) -> dict:
-    """同步单个期刊最近的论文，cancel_check 返回 True 时提前退出"""
+    """同步单个期刊最近的论文（OpenAlex publication_date 口径），cancel_check 返回 True 时提前退出"""
+    from arxiv_pulse.crawler.openalex import save_openalex_item, search_openalex_items
+
     db = Database()
-    items = fetch_crossref_items(
-        pub["issn"], days_back=days_back, rows=limit, date_from=date_from, date_to=date_to
+    items = search_openalex_items(
+        pub["issn"], date_from=date_from, date_to=date_to, rows=limit
     )
     new_papers = 0
     failed = 0
@@ -190,19 +195,16 @@ def sync_publisher(pub: dict, days_back: int = 7, limit: int = 200,
         if cancel_check and cancel_check():
             return {"publisher": pub["key"], "fetched": len(items), "new": new_papers,
                     "failed": failed, "cancelled": True}
-        doi = (item.get("DOI") or "").lower()
+        doi = (item.get("doi") or "").lower().replace("https://doi.org/", "")
         if not doi:
             continue
         if db.paper_exists(doi):
             continue
-        s2_result = None
-        if not (item.get("abstract") or "").strip():
-            s2_result = fetch_s2_abstract(doi)
-        if save_doi_paper(item, pub, s2_result, db) is not None:
+        if save_openalex_item(db, item, pub) is not None:
             new_papers += 1
         else:
             failed += 1
-        time.sleep(0.5)
+        time.sleep(0.3)
     return {"publisher": pub["key"], "fetched": len(items), "new": new_papers, "failed": failed}
 
 

@@ -28,6 +28,10 @@ const PaperCardTemplate = `
     </div>
     
     <template v-if="expanded">
+        <div v-if="generating" class="ai-generating-hint">
+            <span class="ai-generating-spinner"></span>
+            {{ isZh ? 'AI 正在生成总结与图片...' : 'AI is generating summary & figure...' }}
+        </div>
         <div v-if="paper.abstract_translation" class="translation-section">
             <h4>{{ t('paper.chineseTranslation') }}</h4>
             <p v-html="renderLatex(paper.abstract_translation)"></p>
@@ -97,16 +101,31 @@ const PaperCardTemplate = `
 </div>
 `;
 
-const PaperCardSetup = (props) => {
+const PaperCardSetup = (props, { emit }) => {
     const expanded = ref(props.startExpanded || false);
     const cardRef = ref(null);
-    
+    const generating = ref(false);
+
     const t = props.t || ((key) => key);
     const isZh = computed(() => props.currentLang === 'zh');
-    
+
+    // AI 总结完成后停止生成中动效（成功 summarized / 失败 _summarizing=false 任一都会触发）
+    watch(() => props.paper.summarized, (v) => {
+        if (v) generating.value = false;
+    });
+    watch(() => props.paper._summarizing, (v) => {
+        if (v === false) generating.value = false;
+    });
+
     const toggleExpand = () => {
         const wasExpanded = expanded.value;
         expanded.value = !expanded.value;
+
+        // 展开时按需触发 AI 总结与首图生成（更新流程已不再自动生成）
+        if (!wasExpanded && !props.paper.summarized && !generating.value) {
+            generating.value = true;
+            emit('request-summary', props.paper);
+        }
 
         if (wasExpanded && cardRef.value) {
             setTimeout(() => {
@@ -442,5 +461,5 @@ const PaperCardSetup = (props) => {
         return props.paper.category_explanation_en || props.paper.category_explanation || '';
     });
     
-    return { expanded, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, downloadPDF, openImage, downloadCard, analyzePaper, onFigureError, t, isZh, categoryExplanation, sourceLabel };
+    return { expanded, generating, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, downloadPDF, openImage, downloadCard, analyzePaper, onFigureError, t, isZh, categoryExplanation, sourceLabel };
 };

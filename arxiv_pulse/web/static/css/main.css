@@ -4011,3 +4011,30 @@
             color: #d5d8dc;
             font-size: 14px;
         }
+
+/* AI generating hint: pulsing color + spinner */
+.ai-generating-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 6px 0;
+    color: var(--text-muted);
+    animation: aiHintPulse 1.6s ease-in-out infinite;
+}
+.ai-generating-spinner {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border: 2px solid rgba(64, 158, 255, 0.25);
+    border-top-color: #409eff;
+    border-radius: 50%;
+    animation: aiSpin 0.9s linear infinite;
+}
+@keyframes aiHintPulse {
+    0%, 100% { color: #909399; }
+    50% { color: #409eff; }
+}
+@keyframes aiSpin {
+    to { transform: rotate(360deg); }
+}

@@ -52,6 +52,11 @@ class Config:
         return key if key else None
 
     @classproperty
+    def S2_API_KEY(cls) -> str | None:
+        key = os.getenv("S2_API_KEY") or cls._get("s2_api_key", "")
+        return key if key else None
+
+    @classproperty
     def AI_MODEL(cls) -> str:
         return cls._get("ai_model", "DeepSeek-V3.2")
 

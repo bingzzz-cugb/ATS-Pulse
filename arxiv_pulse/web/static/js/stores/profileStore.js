@@ -39,6 +39,21 @@ const useProfileStore = defineStore('profile', {
             const res = await API.config.profiles.remove(id);
             if (!res.ok) throw new Error('删除失败');
             this.profiles = this.profiles.filter(p => p.id !== id);
+        },
+        async searchJournalCatalog(q = '') {
+            const res = await API.config.profiles.journals(q);
+            if (!res.ok) return { items: [], syncing: false, count: 0, error: null };
+            return res.json();
+        },
+        async journalCatalogStatus() {
+            const res = await API.config.profiles.journalStatus();
+            if (!res.ok) return { syncing: false, count: 0, pages: 0, total: null, error: null };
+            return res.json();
+        },
+        async refreshJournalCatalog() {
+            try {
+                await API.config.profiles.journalRefresh();
+            } catch (e) { console.error('Failed to refresh journal catalog:', e); }
         }
     }
 });

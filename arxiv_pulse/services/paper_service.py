@@ -40,6 +40,14 @@ def enhance_paper_data(paper: Paper, session=None, translation_service=None, lan
 
     data = paper.to_dict()
 
+    # 论文检索来源标识（近期页来源勾选显示过滤用）
+    if (paper.search_query or "").startswith("s2:"):
+        data["origin"] = "s2"
+    elif paper.source == "arxiv":
+        data["origin"] = "arxiv"
+    else:
+        data["origin"] = "crossref"
+
     # Get category explanations for both languages
     cat_explanations = get_category_explanations(paper.categories or "")
     data["category_explanation_zh"] = cat_explanations["zh"]

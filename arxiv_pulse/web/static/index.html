@@ -259,6 +259,11 @@
                                            style="width: 200px; margin-left: 8px;">
                                     <el-option v-for="p in profileStore.profiles" :key="p.id" :label="p.name" :value="p.id"></el-option>
                                 </el-select>
+                                <el-checkbox-group v-model="recentSourceShow" style="margin-left: 12px;">
+                                    <el-checkbox label="arxiv" style="margin-right: 2px;">arXiv</el-checkbox>
+                                    <el-checkbox label="crossref" style="margin-right: 2px;">{{ currentLang === 'zh' ? '期刊' : 'Journals' }}</el-checkbox>
+                                    <el-checkbox label="s2" style="margin-right: 2px;">S2</el-checkbox>
+                                </el-checkbox-group>
                                 <el-button type="primary" @click="updateRecentPapers(configStore)" :loading="updatingRecent" :disabled="updatingRecent">
                                     <el-icon><Refresh /></el-icon> {{ t('papers.update') }}
                                 </el-button>
@@ -322,7 +327,7 @@
                                 {{ t('papers.loadMore') }} (+{{ settingsConfig.recent_papers_limit || 20 }})
                             </el-button>
                         </div>
-                        <template v-if="recentPapers.length > 0">
+                        <template v-if="filteredRecentPapers.length > 0">
                             <div class="recent-papers-container" ref="recentPapersContainer">
                                 <paper-card
                                     v-for="(paper, idx) in pagedPapers"
@@ -336,15 +341,16 @@
                                     @add-to-collection="addToCollection"
                                     @add-to-cart="addToCart"
                                     @remove-from-cart="removeFromCartByArxivId"
+                                    @request-summary="onRequestSummary"
                                 />
                             </div>
-                            <div v-if="recentPapers.length > RECENT_PAGE_SIZE" class="recent-pagination">
+                            <div v-if="filteredRecentPapers.length > RECENT_PAGE_SIZE" class="recent-pagination">
                                 <el-pagination
                                     :current-page="recentPage"
                                     background
                                     layout="prev, pager, next"
                                     :page-size="RECENT_PAGE_SIZE"
-                                    :total="recentPapers.length"
+                                    :total="filteredRecentPapers.length"
                                     :pager-count="5"
                                     @current-change="onRecentPageChange"
                                 />
@@ -890,7 +896,7 @@
                                     host.remove();
                                 }, 150);
                             };
-                            return { show, editing, t: (k) => configStore.t(k), close };
+                            return { show, editing, t: (k) => configStore.t(k), close, profileStore };
                         },
                         template: `<profile-dialog :show="show" :editing="editing" :t="t" @update:show="close" @saved="profileStore.fetchProfiles()"></profile-dialog>`
                     });
@@ -1090,13 +1096,40 @@
                 // Recent papers pagination
                 const recentPage = ref(1);
                 const RECENT_PAGE_SIZE = 7;
+                // 近期页来源显示勾选（仅过滤展示，不影响同步与档案设置）
+                const recentSourceShow = ref(['arxiv', 'crossref', 's2']);
+                const filteredRecentPapers = computed(() => {
+                    const show = recentSourceShow.value;
+                    if (!show.length) return [];
+                    const mapOrigin = (p) => {
+                        if (p.origin) return p.origin;
+                        if ((p.search_query || '').startsWith('s2:')) return 's2';
+                        return p.source === 'doi' ? 'crossref' : 'arxiv';
+                    };
+                    return recentPapers.value.filter(p => show.includes(mapOrigin(p)));
+                });
                 const pagedPapers = computed(() => {
                     const start = (recentPage.value - 1) * RECENT_PAGE_SIZE;
-                    return recentPapers.value.slice(start, start + RECENT_PAGE_SIZE);
+                    return filteredRecentPapers.value.slice(start, start + RECENT_PAGE_SIZE);
                 });
-                watch(recentPapers, () => {
+                watch(filteredRecentPapers, () => {
                     recentPage.value = 1;
                 });
+                async function onRequestSummary(paper) {
+                    if (paper._summarizing || paper.summarized) return;
+                    paper._summarizing = true;
+                    try {
+                        const res = await API.papers.summarize(paper.id);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.paper) Object.assign(paper, data.paper);
+                        }
+                    } catch (e) {
+                        console.error('按需总结失败:', e);
+                    } finally {
+                        paper._summarizing = false;
+                    }
+                }
                 watch(recentSources, () => {
                     if (!updatingRecent.value) fetchRecentCache();
                 });
@@ -1744,6 +1777,11 @@
                 }
 
                 async function fetchRecentCache() {
+                    // 选了档案时缓存快照非档案专属，跳到更新流程
+                    if (recentProfileIds.value.length > 0) {
+                        loadingRecent.value = false;
+                        return;
+                    }
                     if (recentSources.value.length === 0) {
                         recentPapers.value = [];
                         recentTotalCount.value = 0;
@@ -1866,12 +1904,17 @@
                             limit: settingsConfig.value.recent_papers_limit || 50
                         });
                         recentTimeQuery(params);
-                        params.set('sources', recentSources.value.join(','));
-                        const cats = recentCategories.value.length > 0
-                            ? recentCategories.value
-                            : (settingsConfig.value.selected_fields || []);
-                        if (cats.length > 0) {
-                            params.append('categories', cats.join(','));
+                        if (recentProfileIds.value.length > 0) {
+                            // 精选档案：来源/领域由档案自身的检索计划与来源设置决定
+                            params.set('profile_ids', recentProfileIds.value.join(','));
+                        } else {
+                            params.set('sources', recentSources.value.join(','));
+                            const cats = recentCategories.value.length > 0
+                                ? recentCategories.value
+                                : (settingsConfig.value.selected_fields || []);
+                            if (cats.length > 0) {
+                                params.append('categories', cats.join(','));
+                            }
                         }
 
                         const response = await API.papers.recentUpdate(params.toString(), localCtrl.signal);
@@ -1933,13 +1976,16 @@
                             offset: recentPapers.value.length
                         });
                         recentTimeQuery(params);
-                        params.set('sources', recentSources.value.join(','));
-                        
-                        const cats = recentCategories.value.length > 0 
-                            ? recentCategories.value 
-                            : (settingsConfig.value.selected_fields || []);
-                        if (cats.length > 0) {
-                            params.set('categories', cats.join(','));
+                        if (recentProfileIds.value.length > 0) {
+                            params.set('profile_ids', recentProfileIds.value.join(','));
+                        } else {
+                            params.set('sources', recentSources.value.join(','));
+                            const cats = recentCategories.value.length > 0
+                                ? recentCategories.value
+                                : (settingsConfig.value.selected_fields || []);
+                            if (cats.length > 0) {
+                                params.set('categories', cats.join(','));
+                            }
                         }
                         
                         const res = await API.papers.recent(params.toString());
@@ -2854,7 +2900,7 @@
                     showSettings, settingsConfig, savingSettings,
                     currentPage, stats, fieldStats, expandedGroups, recentPapers, searchResults, collections,
                     loadingRecent, updatingRecent, recentLogs, loadingProgress, loadingTotal, stopLoading,
-                    recentPage, RECENT_PAGE_SIZE, pagedPapers, onRecentPageChange,
+                    recentPage, RECENT_PAGE_SIZE, pagedPapers, filteredRecentPapers, onRecentPageChange,
                     recentDays, recentDateRange, recentCategories,
                     categoryOptions, daysOptions, syncYearOptions, initYearOptions, syncYearsBackOptions, searchDaysOptions, aiLanguageOptions,
                     searching, searchQuery, searchDays, searchLogs,
@@ -2876,7 +2922,7 @@
                     homeQuery, homeSearching, homeLogs, homeResults, homeSelectedIds,
                     checkInitStatus, testSetupAI, toggleSetupField, toggleCategoryGroup, startInitialSync,
                     testAIConnection, saveSettings, saveApiKey, toggleSettingsField,
-                    fetchStats, fetchFieldStats, fetchRecentCache, updateRecentPapers, startSearch, fetchCollections,
+                    fetchStats, fetchFieldStats, fetchRecentCache, updateRecentPapers, onRequestSummary, startSearch, fetchCollections,
                     getSelectedFieldsTooltip, hasSelectedFields,
                     fetchSyncStatus, startSync,
                     openEditCollection, confirmDeleteCollection, duplicateCollection, openCollectionDetail, showMergeConfirm,
@@ -2885,7 +2931,7 @@
                     navigateTo, navigateToHome, onTabChange, handleHomeSearch, stopHomeSearch, homeLogsContainerRef, handleHomeLogsScroll, toggleHomeSelect, exportHome,
                     stopUpdateRecent, recentLogsContainerRef, handleRecentLogsScroll,
                     syncLogsContainerRef, handleSyncLogsScroll,
-                    recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers, recentSources,
+                    recentSearchQuery, recentSearching, recentUseAiSearch, recentOriginalPapers, recentSources, recentSourceShow,
                     recentTotalCount, recentLoadingMore,
                     searchRecentPapers, resetRecentSearch, loadMoreRecentPapers,
                     showBackToTop, scrollToTop,
