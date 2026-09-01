@@ -13,7 +13,7 @@ const SettingsDrawerTemplate = `
                 <el-radio-button label="en">EN</el-radio-button>
             </el-radio-group>
         </div>
-        
+
         <!-- Theme Mode -->
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding: 12px 16px; background: var(--bg-subtle); border-radius: 10px;">
             <span>
@@ -26,7 +26,7 @@ const SettingsDrawerTemplate = `
                 <el-radio-button label="dark">{{ currentLang === 'zh' ? '暗色' : 'Dark' }}</el-radio-button>
             </el-radio-group>
         </div>
-        
+
         <div class="settings-section">
             <h3>{{ t('settings.aiConfig') }}</h3>
             <el-form label-position="top">
@@ -65,6 +65,21 @@ const SettingsDrawerTemplate = `
 
         <div class="settings-section">
             <h3>{{ t('settings.profilesTitle') }}</h3>
+            <!-- arXiv 筛选标签（全局领域过滤，合并于检索领域下） -->
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-subtle); border-radius: 8px; margin-bottom: 12px;">
+                <div style="min-width: 0;">
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;">
+                        {{ currentLang === 'zh' ? 'arXiv 筛选标签' : 'arXiv field tags' }}
+                    </div>
+                    <div style="font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <template v-if="selectedFieldNames.length">{{ selectedFieldNames.join('、') }}</template>
+                        <template v-else><span style="color: var(--text-muted);">{{ currentLang === 'zh' ? '未选择（默认 cs.CV）' : 'Not set (default cs.CV)' }}</span></template>
+                    </div>
+                </div>
+                <el-button size="small" @click="openFieldSelector">
+                    <el-icon><Edit /></el-icon> {{ currentLang === 'zh' ? '选择' : 'Select' }}
+                </el-button>
+            </div>
             <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 12px;">
                 {{ t('settings.profilesHint') }}
             </p>
@@ -85,29 +100,6 @@ const SettingsDrawerTemplate = `
                 <el-icon><Plus /></el-icon> {{ t('settings.profilesCreate') }}
             </el-button>
         </div>
-
-        <div class="settings-section">
-            <h3>{{ t('settings.syncSettings') }}</h3>
-            <el-form label-position="top">
-                <el-form-item :label="t('settings.yearsBack')">
-                    <el-select v-model="settingsConfig.years_back" style="width: 100%;">
-                        <el-option v-for="item in initYearOptions" :key="item.value" :label="item.label" :value="item.value" />
-                    </el-select>
-                </el-form-item>
-                <el-form-item :label="t('settings.maxResultsPerField')">
-                    <el-input-number v-model="settingsConfig.arxiv_max_results_per_field" :min="1000" :max="50000" :step="1000" style="width: 100%;" />
-                </el-form-item>
-                <el-form-item :label="t('settings.arxivMaxResults')">
-                    <el-input-number v-model="settingsConfig.arxiv_max_results" :min="10000" :max="200000" :step="10000" style="width: 100%;" />
-                </el-form-item>
-                <el-form-item :label="t('settings.recentPapersLimit')">
-                    <el-input-number v-model="settingsConfig.recent_papers_limit" :min="20" :max="200" :step="10" style="width: 100%;" />
-                </el-form-item>
-                <el-form-item :label="t('settings.searchLimit')">
-                    <el-input-number v-model="settingsConfig.search_limit" :min="5" :max="100" :step="5" style="width: 100%;" />
-                </el-form-item>
-            </el-form>
-        </div>
     </div>
 </el-drawer>
 `;
@@ -116,8 +108,12 @@ const SettingsDrawerSetup = (props) => {
     const configStore = useConfigStore();
     const profileStore = useProfileStore();
 
-    const { settingsConfig, savingSettings, testingAI, currentLang, currentTheme } = storeToRefs(configStore);
-    const { t, saveApiKey, saveS2Key, testAIConnection, setLanguage, setTheme } = configStore;
+    const { settingsConfig, savingSettings, testingAI, currentLang, currentTheme, allCategories } = storeToRefs(configStore);
+    const { t, saveApiKey, saveS2Key, testAIConnection, setLanguage, setTheme, openFieldSelector } = configStore;
+
+    const selectedFieldNames = computed(() =>
+        (settingsConfig.value?.selected_fields || []).slice(0, 5).map((id) => allCategories.value[id]?.name || id)
+    );
 
     onMounted(() => {
         profileStore.fetchProfiles();
@@ -141,7 +137,7 @@ const SettingsDrawerSetup = (props) => {
             if (e !== 'cancel') ElementPlus.ElMessage.error(configStore.currentLang === 'zh' ? '删除失败' : 'Delete failed');
         }
     }
-    
+
     const aiLanguageOptions = [
         { value: 'zh', label: '中文' },
         { value: 'en', label: 'English' },
@@ -151,29 +147,18 @@ const SettingsDrawerSetup = (props) => {
         { value: 'es', label: 'Español' },
         { value: 'ar', label: 'العربية' }
     ];
-    
-    const initYearOptions = computed(() => {
-        const isZh = currentLang.value === 'zh';
-        return [
-            { value: 1, label: isZh ? '1 年' : '1 year' },
-            { value: 2, label: isZh ? '2 年' : '2 years' },
-            { value: 3, label: isZh ? '3 年' : '3 years' },
-            { value: 5, label: isZh ? '5 年（推荐）' : '5 years (Recommended)' },
-            { value: 10, label: isZh ? '10 年' : '10 years' }
-        ];
-    });
-    
+
     const onLanguageChange = (lang) => {
         setLanguage(lang);
         if (settingsConfig.value) {
             settingsConfig.value.ui_language = lang;
         }
     };
-    
+
     const onThemeChange = (theme) => {
         setTheme(theme);
     };
-    
+
     return {
         settingsConfig,
         savingSettings,
@@ -185,11 +170,11 @@ const SettingsDrawerSetup = (props) => {
         saveS2Key,
         testAIConnection,
         aiLanguageOptions,
-        initYearOptions,
         onLanguageChange,
         onThemeChange,
         profileStore,
         removeProfile,
-        dispatchProfileCreate, dispatchProfileEdit
+        dispatchProfileCreate, dispatchProfileEdit,
+        selectedFieldNames, openFieldSelector
     };
 };

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from arxiv_pulse.crawler.publisher import _http_get_json
 
 _S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+_S2_DOI_URL_TMPL = "https://api.semanticscholar.org/graph/v1/paper/DOI:{}"
 
 
 def _s2_date_range(date_from: str | None, date_to: str | None) -> str:
@@ -50,6 +51,19 @@ def search_s2_items(
     if log_cb:
         log_cb("S2 搜索仍失败（限流），跳过本次 S2 检索")
     return []
+
+
+def fetch_s2_item_by_doi(doi: str, api_key: str | None = None) -> dict | None:
+    """按 DOI 直接获取 S2 论文记录（与 search 返回同一结构）；失败/限流/不存在返回 None"""
+    fields = "title,abstract,venue,year,publicationDate,externalIds,openAccessPdf,authors,url"
+    url = (
+        f"{_S2_DOI_URL_TMPL}{urllib.parse.quote(doi.lower().strip(), safe='')}"
+        f"?{urllib.parse.urlencode({'fields': fields})}"
+    )
+    headers = {"User-Agent": "arXiv-Pulse/1.0 (mailto:arxiv-pulse@example.com)"}
+    if api_key:
+        headers["x-api-key"] = api_key
+    return _http_get_json(url, headers, timeout=20)
 
 
 def _parse_authors(item: dict) -> str:

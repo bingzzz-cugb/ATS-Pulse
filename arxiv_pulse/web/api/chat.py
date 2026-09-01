@@ -5,11 +5,12 @@ Chat API Router - AI 对话助手
 import asyncio
 import json
 import os
+import re
 import tempfile
 from datetime import UTC, datetime
 
 import requests
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from arxiv_pulse.core import Config
@@ -20,7 +21,7 @@ from arxiv_pulse.models import (
     PaperContentCache,
 )
 from arxiv_pulse.services.pdf_service import resolve_pdf_source
-from arxiv_pulse.utils import sse_event, sse_response
+from arxiv_pulse.utils import sse_guard, sse_event, sse_response
 from arxiv_pulse.web.dependencies import get_db
 
 router = APIRouter()
@@ -30,6 +31,7 @@ class SendMessageRequest(BaseModel):
     content: str
     paper_ids: list[str] = []
     language: str = "zh"  # "zh" or "en"
+    images: list[str] = []  # data URI（base64），多模态消息
 
 
 class RenameSessionRequest(BaseModel):
@@ -154,7 +156,7 @@ async def upload_paper_pdf(
 
 
 @router.post("/sessions/{session_id}/send")
-async def send_message(session_id: int, data: SendMessageRequest):
+async def send_message(request: Request, session_id: int, data: SendMessageRequest):
     """发送消息，SSE 流式返回 AI 回复"""
 
     lang = data.language
@@ -215,6 +217,7 @@ async def send_message(session_id: int, data: SendMessageRequest):
                 role="user",
                 content=data.content,
                 paper_ids=json.dumps(data.paper_ids) if data.paper_ids else None,
+                images=json.dumps(data.images) if data.images else None,
             )
             session.add(user_message)
 
@@ -409,6 +412,7 @@ async def send_message(session_id: int, data: SendMessageRequest):
                 await asyncio.sleep(0.3)
 
         # 滑动窗口：从最新往回累计，超出预算丢弃最旧的消息（论文注入预算另计）
+        # 若消息携带图片（data URI），构造 OpenAI 多模态 content 数组；历史消息的图片一并保留
         history_messages = []
         with get_db().get_session() as session:
             messages = (
@@ -418,7 +422,13 @@ async def send_message(session_id: int, data: SendMessageRequest):
             for msg in reversed(messages):
                 if budget <= 0 and history_messages:
                     break
-                history_messages.append({"role": msg.role, "content": msg.content})
+                if msg.images:
+                    content_parts = [{"type": "text", "text": msg.content or ""}]
+                    for img in json.loads(msg.images):
+                        content_parts.append({"type": "image_url", "image_url": {"url": img}})
+                    history_messages.append({"role": msg.role, "content": content_parts})
+                else:
+                    history_messages.append({"role": msg.role, "content": msg.content})
                 budget -= len(msg.content or "")
         history_messages.reverse()
 
@@ -467,7 +477,7 @@ IMPORTANT: Always respond in English."""
         try:
             import openai
 
-            client = openai.OpenAI(api_key=Config.AI_API_KEY, base_url=Config.AI_BASE_URL)
+            client = openai.OpenAI(api_key=Config.AI_API_KEY, base_url=Config.AI_BASE_URL, timeout=120.0)
 
             yield sse_event("progress", {"stage": "ai_thinking", "message": m["ai_thinking"]})
             await asyncio.sleep(0.3)
@@ -478,6 +488,7 @@ IMPORTANT: Always respond in English."""
                 max_tokens=8000,
                 temperature=0.7,
                 stream=True,
+                timeout=120.0,
             )
 
             full_response = ""
@@ -500,9 +511,17 @@ IMPORTANT: Always respond in English."""
             yield sse_event("done", {})
 
         except Exception as e:
-            yield sse_event("error", {"message": m["response_failed"](str(e))})
+            err = str(e)
+            # 仅当服务商明确不支持图片内容（能力错误）才提示升级模型；尺寸/格式等错误照实展示
+            low = err.lower()
+            capability_markers = ("not support.*image", "does not support.*image", "unsupported.*image",
+                                  "image.*not supported", "invalid_image", "multimodal.*not supported",
+                                  "image content.*not")
+            if any(re.search(p, low) for p in capability_markers):
+                err = "当前模型不支持图片输入，请升级为多模态模型或仅发送文字。\n" + err[:200]
+            yield sse_event("error", {"message": m["response_failed"](err)})
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.get("/papers/{arxiv_id}/content")

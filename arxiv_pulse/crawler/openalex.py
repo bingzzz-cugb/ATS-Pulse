@@ -32,6 +32,12 @@ def _url(params: dict) -> str:
     return f"{_OA_WORKS_URL}?{urllib.parse.urlencode(params)}"
 
 
+def fetch_openalex_work_by_doi(doi: str) -> dict | None:
+    """按 DOI 精确获取 OpenAlex 记录；无记录/失败返回 None"""
+    url = f"{_OA_WORKS_URL}/https://doi.org/{urllib.parse.quote(doi.strip().lower())}"
+    return _http_get_json(url, _OA_HEADERS, timeout=20)
+
+
 def search_openalex_items(
     issn: str,
     date_from: str | None = None,
@@ -55,7 +61,7 @@ def search_openalex_items(
             "sort": "publication_date:asc",
             "per-page": str(min(rows, 200)),
             "page": str(page),
-            "select": "id,doi,title,publication_date,type,authorships,abstract_inverted_index,primary_location,best_oa_location",
+            "select": "id,doi,title,publication_date,type,authorships,abstract_inverted_index,primary_location,best_oa_location,open_access",
         }
         data = _http_get_json(_url(params), _OA_HEADERS, timeout=30)
         if data is None:
@@ -79,7 +85,7 @@ def search_openalex_title(title: str, rows: int = 5, log_cb=None) -> list[dict]:
     params = {
         "search": title,
         "per-page": str(min(rows, 20)),
-        "select": "id,doi,title,publication_date,type,authorships,abstract_inverted_index,primary_location,best_oa_location",
+        "select": "id,doi,title,publication_date,type,authorships,abstract_inverted_index,primary_location,best_oa_location,open_access",
     }
     data = _http_get_json(_url(params), _OA_HEADERS, timeout=30)
     if data is None:
@@ -165,6 +171,7 @@ def save_openalex_item(db, item: dict, pub: dict, profile_id: int | None = None)
             published=_pub_date(item),
             pdf_url=_pdf_url(item, doi),
             journal_ref=pub_name,
+            is_oa="yes" if (item.get("open_access") or {}).get("is_oa") else "no",
             comment=item.get("type") or "",
             search_query=f"publisher:{pub.get('key', 'openalex')}",
             relevance_score=0.0,

@@ -26,13 +26,13 @@ const i18nEn = {
         back: 'Back'
     },
     home: {
-        title: 'ATS Pulse',
-        subtitle: 'Intelligent Academic Literature Tracking & Analysis System',
-        searchPlaceholder: 'Enter arXiv ID, keywords or natural language...',
+        title: 'PaperFlow',
+        subtitle: 'Endless Progress',
+        searchPlaceholder: 'Search by title, arXiv ID, keywords, DOI',
         searchBtn: 'Search',
-        hints: 'Supports arXiv ID or URL for exact search; Natural language search, e.g., "machine learning for materials design"',
+        hints: 'One-stop platform for paper acquisition, analysis, summarization and learning',
         recentPapers: 'Recent',
-        syncManage: 'Sync Management',
+        syncManage: 'Data Management',
         paperCollections: 'Collections',
         totalPapers: 'papers',
         totalCollections: 'collections',
@@ -76,6 +76,7 @@ const i18nEn = {
     sync: {
         status: 'Sync Status',
         lastSync: 'Last Sync',
+        lastUpdate: 'Last Update',
         researchFields: 'Research Fields',
         totalPapers: 'Total Papers',
         syncSettings: 'Sync Settings',
@@ -87,6 +88,7 @@ const i18nEn = {
         categoryDistribution: 'Top Categories',
         noCache: 'No cache',
         neverSynced: 'Never synced',
+        neverUpdated: 'Never updated',
         completed: 'Completed',
         inProgress: 'In progress'
     },
@@ -205,14 +207,15 @@ const i18nEn = {
         profileSourcesShort: 'sources'
     },
     setup: {
-        welcome: 'Welcome to ATS Pulse',
+        welcome: 'Welcome to PaperFlow',
         step: 'Step',
         aiConfig: 'Configure AI',
-        selectFields: 'Select Research Fields',
+        selectFields: 'Refine research direction (filter arXiv by field)',
         syncSettings: 'Sync Settings',
         startSync: 'Start Sync',
         apiHint: 'Configure AI for intelligent summarization and translation',
-        fieldsHint: 'Select your research fields of interest',
+        fieldsHint: '1. Choose arXiv research fields (papers will be filtered by field)',
+        profilesHint: '2. Create your own research profile',
         syncHint: 'Set sync parameters',
         syncBtn: 'Start Sync',
         yearsBack: 'Default Years Back',
@@ -277,7 +280,8 @@ const i18nEn = {
         original: 'Original',
         openExternal: 'Open in new tab',
         openArxiv: 'Open on arXiv',
-        noSelection: 'Select papers first'
+        noSelection: 'Select papers first',
+        uploadPdfEnrich: 'Upload PDF for full summary'
     },
     pdf: {
         loading: 'Loading PDF...',

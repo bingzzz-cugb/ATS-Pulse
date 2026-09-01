@@ -22,13 +22,13 @@ def extract_key_findings(summary: str | None) -> list[str]:
         return []
 
 
-def summarize_and_cache_paper(paper: Paper) -> bool:
-    """总结论文并保存到数据库"""
+def summarize_and_cache_paper(paper: Paper, progress_cb=None) -> bool:
+    """总结论文并保存到数据库；progress_cb(stage, message) 用于向前端推送阶段进度"""
     try:
         from arxiv_pulse.ai import PaperSummarizer
 
         summarizer = PaperSummarizer()
-        return summarizer.summarize_paper(paper)
+        return summarizer.summarize_paper(paper, progress_cb=progress_cb)
     except Exception:
         return False
 
@@ -76,16 +76,21 @@ def enhance_paper_data(paper: Paper, session=None, translation_service=None, lan
     data["title_translation"] = translate_text(paper.title, Config.TRANSLATE_LANGUAGE)
     data["abstract_translation"] = translate_text(paper.abstract, Config.TRANSLATE_LANGUAGE) if paper.abstract else ""
 
+    # 用户手动上传过 PDF(全文缓存) → 视为可获取内容(前端用于 OA 徽章判定)
+    from arxiv_pulse.models import PaperContentCache
+
     if session:
         figure = session.query(FigureCache).filter_by(arxiv_id=paper.arxiv_id).first()
         data["figure_url"] = figure.figure_url if figure else None
         collection_ids = [cp.collection_id for cp in session.query(CollectionPaper).filter_by(paper_id=paper.id).all()]
         data["collection_ids"] = collection_ids
+        data["has_manual_pdf"] = session.query(PaperContentCache).filter_by(arxiv_id=paper.arxiv_id).first() is not None
     else:
         with get_db().get_session() as s:
             figure = s.query(FigureCache).filter_by(arxiv_id=paper.arxiv_id).first()
             data["figure_url"] = figure.figure_url if figure else None
             collection_ids = [cp.collection_id for cp in s.query(CollectionPaper).filter_by(paper_id=paper.id).all()]
             data["collection_ids"] = collection_ids
+            data["has_manual_pdf"] = s.query(PaperContentCache).filter_by(arxiv_id=paper.arxiv_id).first() is not None
 
     return data

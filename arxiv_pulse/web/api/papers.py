@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from arxiv_pulse.core import Config
@@ -19,7 +19,7 @@ from arxiv_pulse.services.paper_service import (
     enhance_paper_data,
     summarize_and_cache_paper,
 )
-from arxiv_pulse.utils import sse_event, sse_response
+from arxiv_pulse.utils import sse_guard, sse_event, sse_response
 from arxiv_pulse.web.dependencies import get_db
 
 router = APIRouter()
@@ -97,12 +97,18 @@ def looks_like_full_title(q: str) -> bool:
 
 
 def parse_arxiv_id(query: str) -> str | None:
-    """Parse arXiv ID from various formats"""
+    """Parse arXiv ID from various formats.
+
+    只接受「整个输入就是 arXiv ID」，避免从 DOI（如 10.1016/…2025.127034）
+    中错误抠出尾段当作 arXiv ID。
+    """
     q = query.strip()
     if q.startswith("arXiv:"):
         q = q[6:]
-    arxiv_pattern = r"(\d{4}\.\d{4,5})"
-    match = re.search(arxiv_pattern, q)
+    url_match = re.match(r"https?://arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?", q)
+    if url_match:
+        return url_match.group(1)
+    match = re.fullmatch(r"(\d{4}\.\d{4,5})(?:v\d+)?", q)
     return match.group(1) if match else None
 
 
@@ -224,6 +230,7 @@ async def get_recent_cache(
 
 @router.get("/recent/cache/stream")
 async def get_recent_cache_stream(
+    request: Request,
     sources: str | None = Query(None, description="Comma-separated sources: arxiv,tgrs,science"),
 ):
     """SSE: Get cached recent papers with progress"""
@@ -272,7 +279,7 @@ async def get_recent_cache_stream(
 
         yield sse_event("done", {"total": total, "db_total": total, "cached": True})
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.get("/recent/status")
@@ -316,6 +323,7 @@ async def cancel_recent_update():
 
 @router.post("/recent/update")
 async def update_recent_papers(
+    request: Request,
     days: int = Query(7, ge=1, le=30),
     date_from: str | None = Query(None, description="Start date (YYYY-MM-DD), takes precedence over days"),
     date_to: str | None = Query(None, description="End date (YYYY-MM-DD), takes precedence over days"),
@@ -554,6 +562,20 @@ async def update_recent_papers(
                 task.completed_at = datetime.now(UTC).replace(tzinfo=None)
                 session.commit()
 
+            # 记录「近期论文页面上次更新时间」（数据管理页展示用）
+            try:
+                from arxiv_pulse.models import SystemConfig
+
+                now_iso = datetime.now(UTC).isoformat()
+                existing = session.query(SystemConfig).filter_by(key="last_recent_update").first()
+                if existing:
+                    existing.value = now_iso
+                else:
+                    session.add(SystemConfig(key="last_recent_update", value=now_iso, description="近期论文页面上次更新时间"))
+                session.commit()
+            except Exception:
+                pass
+
         # 全部处理完成后才写缓存——取消时会提前 return，不会留下过期缓存。
         # 自定义日期区间与档案场景不写缓存（缓存仅表达"最近 N 天全局"语义）
         if not use_range and not profile_list:
@@ -572,11 +594,11 @@ async def update_recent_papers(
 
         _unregister_update_task(task_id)
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.get("/quick")
-async def quick_fetch(q: str = Query(..., min_length=1)):
+async def quick_fetch(request: Request, q: str = Query(..., min_length=1)):
     """SSE endpoint for quick paper fetch by arXiv ID or fuzzy search"""
 
     async def event_generator():
@@ -706,9 +728,17 @@ async def quick_fetch(q: str = Query(..., min_length=1)):
         if _DOI_RE.match(q_stripped):
             import urllib.request as urllib_req
 
+            from arxiv_pulse.crawler.openalex import (
+                fetch_openalex_work_by_doi,
+                save_openalex_item,
+            )
             from arxiv_pulse.crawler.publisher import save_doi_paper
+            from arxiv_pulse.crawler.s2 import fetch_s2_item_by_doi, save_s2_item
 
             doi_l = q_stripped.lower()
+            errors = []
+
+            # ① Crossref: DOI 登记处, metadata 权威
             try:
                 req = urllib_req.Request(
                     f"https://api.crossref.org/works/{urllib.parse.quote(doi_l)}",
@@ -720,17 +750,62 @@ async def quick_fetch(q: str = Query(..., min_length=1)):
                 container = container[0] if isinstance(container, list) else container
                 pub = {"key": "custom", "name": container or "Journal", "categories": container or "Journal"}
                 save_doi_paper(item, pub, db=db)
+                with db.get_session() as s:
+                    paper = s.query(Paper).filter_by(arxiv_id=doi_l).first()
+                if paper:
+                    yield sse_event("log", {"message": "已从 Crossref 获取论文"})
+                    yield sse_event("result", {"paper": enhance_paper_data(paper), "match_type": "doi"})
+                    yield sse_event("done", {"total": 1})
+                    return
+                errors.append("Crossref: 记录存在但入库失败")
             except Exception as e:
-                yield sse_event("error", {"message": f"DOI 检索失败: {str(e)[:80]}"})
-                return
-            with db.get_session() as s:
-                paper = s.query(Paper).filter_by(arxiv_id=doi_l).first()
-            if paper:
-                yield sse_event("log", {"message": "已从 Crossref 获取论文"})
-                yield sse_event("result", {"paper": enhance_paper_data(paper), "match_type": "doi"})
-                yield sse_event("done", {"total": 1})
-            else:
-                yield sse_event("error", {"message": "DOI 已存在记录或入库失败"})
+                errors.append(f"Crossref: {str(e)[:60]}")
+
+            # ② S2 (Semantic Scholar): 独立聚合, 覆盖会议/期刊/预印本
+            yield sse_event("log", {"message": "Crossref 未命中，尝试 Semantic Scholar (S2)…"})
+            await asyncio.sleep(0.05)
+            try:
+                item = fetch_s2_item_by_doi(doi_l, api_key=Config.S2_API_KEY)
+                if item:
+                    saved = save_s2_item(db, item)
+                    if saved:
+                        yield sse_event("log", {"message": "已从 S2 获取论文"})
+                        yield sse_event("result", {"paper": enhance_paper_data(saved), "match_type": "doi"})
+                        yield sse_event("done", {"total": 1})
+                        return
+                    errors.append("S2: 记录存在但入库失败")
+                else:
+                    errors.append("S2: 未命中或限流")
+            except Exception as e:
+                errors.append(f"S2: {str(e)[:60]}")
+
+            # ③ OpenAlex: 全网聚合索引
+            yield sse_event("log", {"message": "S2 未命中，尝试 OpenAlex…"})
+            await asyncio.sleep(0.05)
+            try:
+                item = fetch_openalex_work_by_doi(doi_l)
+                if item:
+                    src = (item.get("primary_location") or {}).get("source") or {}
+                    src_name = src.get("display_name") or "Journal"
+                    pub = {
+                        "key": "doi-search",
+                        "name": src_name,
+                        "categories": src_name,
+                        "issn": (src.get("issn") or [""])[0],
+                    }
+                    saved = save_openalex_item(db, item, pub)
+                    if saved:
+                        yield sse_event("log", {"message": "已从 OpenAlex 获取论文"})
+                        yield sse_event("result", {"paper": enhance_paper_data(saved), "match_type": "doi"})
+                        yield sse_event("done", {"total": 1})
+                        return
+                    errors.append("OpenAlex: 记录存在但入库失败")
+                else:
+                    errors.append("OpenAlex: 未命中")
+            except Exception as e:
+                errors.append(f"OpenAlex: {str(e)[:60]}")
+
+            yield sse_event("error", {"message": "DOI 多源检索均失败: " + "; ".join(errors)})
             return
 
         if looks_like_full_title(q_stripped):
@@ -784,7 +859,7 @@ async def quick_fetch(q: str = Query(..., min_length=1)):
         yield sse_event("log", {"message": "未识别为特定文章，未在本地找到相关论文"})
         yield sse_event("done", {"total": 0})
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.get("/search")
@@ -823,6 +898,7 @@ async def search_papers(
 
 @router.get("/search/stream")
 async def search_papers_stream(
+    request: Request,
     q: str = Query(..., min_length=1),
     days: int | None = None,
     limit: int = Query(20, ge=1, le=100),
@@ -962,7 +1038,7 @@ async def search_papers_stream(
 
         yield sse_event("done", {"total": len(unique_papers), "summarized": summarized_count, "figures": figure_count})
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 class AIFilterPapersRequest(BaseModel):
@@ -1077,6 +1153,53 @@ async def summarize_paper_on_demand(paper_id: int):
         paper = session.query(Paper).filter_by(id=paper_id).first()
         enhanced = enhance_paper_data(paper, session)
     return {"success": bool(ok), "paper": enhanced}
+
+
+@router.post("/{paper_id}/summarize/stream")
+async def summarize_paper_stream(request: Request, paper_id: int):
+    """卡片「展开」时按需生成 AI 总结，SSE 流式推送阶段进度"""
+    import asyncio
+
+    from arxiv_pulse.services.figure_service import fetch_and_cache_figure, get_figure_url_cached
+    from arxiv_pulse.services.paper_service import enhance_paper_data, summarize_and_cache_paper
+
+    async def event_generator():
+        with get_db().get_session() as session:
+            paper = session.query(Paper).filter_by(id=paper_id).first()
+            if not paper:
+                yield sse_event("error", {"message": "Paper not found"})
+                return
+
+        stage_events = []
+        done_cb = lambda stage, msg: stage_events.append((stage, msg))
+
+        def progress_cb(stage, msg):
+            stage_events.append((stage, msg))
+
+        ok = await asyncio.to_thread(summarize_and_cache_paper, paper, progress_cb)
+
+        # 依次回放进度事件
+        for stage, message in stage_events:
+            yield sse_event("progress", {"stage": stage, "message": message})
+            await asyncio.sleep(0.05)
+
+        had_no_abstract = any(s[0] == "no_abstract" for s in stage_events)
+        if not ok:
+            yield sse_event("done", {"success": False, "no_abstract": had_no_abstract})
+            return
+
+        with get_db().get_session() as session:
+            paper = session.query(Paper).filter_by(id=paper_id).first()
+            figure_url = get_figure_url_cached(paper.arxiv_id, session) if paper else None
+        if paper and not figure_url:
+            await asyncio.to_thread(fetch_and_cache_figure, paper.arxiv_id)
+
+        with get_db().get_session() as session:
+            paper = session.query(Paper).filter_by(id=paper_id).first()
+            enhanced = enhance_paper_data(paper, session) if paper else None
+        yield sse_event("done", {"success": True, "paper": enhanced, "no_abstract": had_no_abstract})
+
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.get("/{paper_id}/translate")

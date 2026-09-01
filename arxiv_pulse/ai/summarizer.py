@@ -137,27 +137,6 @@ class PaperSummarizer:
 
         return found_phrases + single_keywords
 
-    def basic_summary(self, paper: Paper) -> str:
-        """Generate basic summary without AI"""
-        abstract_str = str(paper.abstract) if paper.abstract else ""
-        title_str = str(paper.title) if paper.title else ""
-
-        sentences = re.split(r"[.!?]+", abstract_str)
-        if len(sentences) > 3:
-            key_finding = ". ".join(sentences[:3]) + "."
-        else:
-            key_finding = abstract_str[:500] + "..." if len(abstract_str) > 500 else abstract_str
-
-        keywords = self.extract_keywords(f"{title_str} {abstract_str}")
-
-        return json.dumps(
-            {
-                "key_findings": [key_finding] if key_finding else [],
-                "methodology": "",
-                "keywords": keywords,
-            }
-        )
-
     def get_summary_prompt(self, paper: Paper, lang: str = "zh") -> tuple[str, str]:
         """Get summary prompt and system message based on language"""
 
@@ -193,7 +172,60 @@ Please format your response as a JSON object with the following fields:
 
         return prompt, system_msg
 
-    def deepseek_summary(self, paper: Paper) -> str | None:
+    def _fetch_full_text(self, paper: Paper) -> str | None:
+        """只读本地全文缓存（手动上传 / AI 助手下载过的），无则返回 None——不执行网络下载"""
+        try:
+            from arxiv_pulse.models import PaperContentCache
+
+            with self.db.get_session() as session:
+                cache = session.query(PaperContentCache).filter_by(arxiv_id=paper.arxiv_id).first()
+                if cache and cache.full_text:
+                    return str(cache.full_text)
+        except Exception:
+            pass
+        return None
+
+    def _fetch_s2_abstract(self, paper: Paper) -> str | None:
+        """从 Semantic Scholar 快速探测摘要（单次请求、短超时；拿到返回否则 None，立即降级不拖延）"""
+        if not paper.doi:
+            return None
+        try:
+            from arxiv_pulse.crawler.publisher import fetch_s2_abstract
+
+            # retries=1 单次尝试，S2 限流/无记录时快速返回 None（不进入 AI 慢等待、不反复重试）
+            abstract, _ = fetch_s2_abstract(paper.doi, retries=1)
+            return abstract
+        except Exception as e:
+            output.warn(f"S2 摘要获取失败: {paper.arxiv_id}: {str(e)[:80]}")
+            return None
+
+    def _build_summary_prompt_from_text(self, paper: Paper, full_text: str, lang: str, is_abstract: bool = False) -> str:
+        """基于全文/摘要（截断控制 token）构造总结 prompt"""
+        target_lang = "Chinese" if lang == "zh" else "English"
+        content = full_text[:12000]
+        source_note = "summarized from abstract" if is_abstract else "summarized from full text"
+        return f"""
+Please summarize the following research paper in a structured format. Write your response in {target_lang}.
+
+Title: {paper.title}
+
+Abstract: Not available ({source_note})
+
+Paper content (truncated):
+{content}
+
+Please provide:
+1. Key findings/conclusions (bullet points, most important)
+2. Methodology/approach used
+3. Relevant keywords (5-10)
+
+Please format your response as a JSON object with the following fields:
+- key_findings: array of strings (bullet points of key findings and conclusions)
+- methodology: string (brief description of the approach)
+- keywords: array of relevant keywords (5-10)
+"""
+
+    def deepseek_summary(self, paper: Paper, progress_cb=None) -> str | None:
         """Generate summary using DeepSeek"""
         if not self.config.AI_API_KEY:
             return None
@@ -202,10 +234,55 @@ Please format your response as a JSON object with the following fields:
 
         try:
             output.do(f"总结论文: {paper.arxiv_id}")
+            if progress_cb:
+                progress_cb("querying_abstract", "正在查询有无摘要...")
 
+            # 摘要为空：不进入 AI 慢等待。
+            # 1) 若手动上传过 PDF（PaperContentCache 缓存）→ 从缓存全文总结（内容来自用户，秒级读取）
+            # 2) 否则快速探测 S2 摘要（单次请求），拿到则 write-back + AI 总结
+            # 3) 都没有 → 秒级降级基础总结
+            # 只有「有摘要或缓存全文」的论文才进入 AI 调用（最多 40s）；无摘要论文展开不会卡 90s。
+            if not (paper.abstract or "").strip():
+                full_text = self._fetch_full_text(paper)
+                if full_text:
+                    prompt = self._build_summary_prompt_from_text(
+                        paper, full_text, self.config.TRANSLATE_LANGUAGE,
+                    )
+                    if progress_cb:
+                        progress_cb("has_abstract", "已确认有摘要（本地全文），正在生成总结...")
+                else:
+                    s2_abstract = self._fetch_s2_abstract(paper)
+                    if s2_abstract:
+                        try:
+                            self.db.update_paper(paper.arxiv_id, abstract=s2_abstract)
+                            paper.abstract = s2_abstract
+                        except Exception:
+                            pass
+                        prompt = self._build_summary_prompt_from_text(
+                            paper, s2_abstract, self.config.TRANSLATE_LANGUAGE, is_abstract=True
+                        )
+                        output.info(f"S2 摘要素材: {len(s2_abstract)} 字符")
+                        if progress_cb:
+                            progress_cb("has_abstract", "已确认有摘要，正在生成总结...")
+                    else:
+                        output.info("S2 无摘要，跳过 AI 总结，直接基础总结")
+                        if progress_cb:
+                            progress_cb("no_abstract", "未找到摘要，已降级为基础总结")
+                        return None
+            elif progress_cb:
+                # 论文本身有 abstract
+                progress_cb("has_abstract", "已确认有摘要，正在生成总结...")
+
+            if progress_cb:
+                progress_cb("generating", "正在生成总结...")
             import openai
 
-            client = openai.OpenAI(api_key=self.config.AI_API_KEY, base_url=self.config.AI_BASE_URL)
+            client = openai.OpenAI(
+                api_key=self.config.AI_API_KEY,
+                base_url=self.config.AI_BASE_URL,
+                timeout=40.0,
+                max_retries=1,
+            )
 
             response = client.chat.completions.create(
                 model=self.config.AI_MODEL,
@@ -215,6 +292,7 @@ Please format your response as a JSON object with the following fields:
                 ],
                 max_tokens=self.config.SUMMARY_MAX_TOKENS,
                 temperature=0.3,
+                timeout=40.0,
             )
 
             if hasattr(response, "usage") and response.usage:
@@ -274,20 +352,20 @@ Please format your response as a JSON object with the following fields:
             output.error(f"DeepSeek API 错误: {paper.arxiv_id}", details={"exception": str(e)})
             return None
 
-    def summarize_paper(self, paper: Paper) -> bool:
-        """Summarize a single paper"""
+    def summarize_paper(self, paper: Paper, progress_cb=None) -> bool:
+        """Summarize a single paper（无摘要则不生成，需上传 PDF）"""
         try:
             summary_json = None
 
             if self.config.AI_API_KEY:
-                summary_json = self.deepseek_summary(paper)
+                summary_json = self.deepseek_summary(paper, progress_cb=progress_cb)
 
             if not summary_json:
-                summary_json = self.basic_summary(paper)
-                text_length = len(str(paper.title or "")) + len(str(paper.abstract or ""))
-                estimated_tokens = text_length // 4
-                self.total_tokens += estimated_tokens
-                output.info(f"基础总结Token估算: 约 {estimated_tokens} tokens | 累计总计 {self.total_tokens} tokens")
+                # 基础总结已移除：无摘要时不生成总结（由前端提示上传 PDF）
+                if progress_cb:
+                    progress_cb("no_abstract", "未找到摘要，无法生成总结。请上传 PDF 后重试。")
+                output.info(f"无摘要，放弃总结: {paper.arxiv_id}")
+                return False
 
             if summary_json:
                 try:

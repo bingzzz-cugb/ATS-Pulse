@@ -221,6 +221,9 @@ async def initialize_system(init_config: InitConfig):
     if search_queries:
         db.set_search_queries(search_queries)
 
+    # 初始化不再自动同步论文，由用户按需在近期论文页面更新；直接标记初始化完成
+    db.set_initialized(True)
+
     return {"success": True, "message": "配置已保存"}
 
 

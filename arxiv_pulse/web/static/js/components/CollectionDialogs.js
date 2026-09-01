@@ -113,6 +113,7 @@ const CollectionDialogsTemplate = `
                             @remove-from-collection="removePaperFromCollection"
                             @add-to-cart="addToCart"
                             @remove-from-cart="removeFromCartByArxivId"
+                            @request-summary="onRequestSummary"
                         />
                     </template>
                     <template v-else>
@@ -218,6 +219,10 @@ const CollectionDialogsSetup = (props, { emit }) => {
     function addToCart(paper) {
         emit('add-to-cart', paper);
     }
+
+    function onRequestSummary(paper) {
+        emit('request-summary', paper);
+    }
     
     function removeFromCartByArxivId(arxivId) {
         emit('remove-from-cart', arxivId);
@@ -278,7 +283,7 @@ const CollectionDialogsSetup = (props, { emit }) => {
         showMergeConfirmDialog, mergingFromCollection, mergingToCollection, mergingInProgress,
         collectionDetailZIndex: props.collectionDetailZIndex,
         formatRelativeTime, t, currentLang,
-        isInCart, addToCart, removeFromCartByArxivId,
+        isInCart, addToCart, removeFromCartByArxivId, onRequestSummary,
         saveCollection, cancelCollectionDialog, confirmAddToCollection,
         addToCollection, removePaperFromCollection, performSearch, toggleSortOrder,
         openPaperUrl, loadCollectionPage, deleteCollection, mergePapers

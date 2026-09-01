@@ -7,12 +7,12 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from arxiv_pulse.core import Config
 from arxiv_pulse.models import Paper, RecentResult, SyncTask
-from arxiv_pulse.utils import sse_event, sse_response
+from arxiv_pulse.utils import sse_guard, sse_event, sse_response
 from arxiv_pulse.web.dependencies import get_db
 
 router = APIRouter()
@@ -74,8 +74,18 @@ async def get_sync_status():
                 "created_at": running_task.created_at.isoformat() if running_task.created_at else None,
             }
 
+        last_recent_update = None
+        try:
+            from arxiv_pulse.models import SystemConfig
+
+            cfg = session.query(SystemConfig).filter_by(key="last_recent_update").first()
+            last_recent_update = cfg.value if cfg and cfg.value else None
+        except Exception:
+            pass
+
         return {
             "last_sync": last_sync,
+            "last_recent_update": last_recent_update,
             "database": {
                 "created_at": (
                     earliest_paper.created_at.isoformat() if earliest_paper and earliest_paper.created_at else None
@@ -91,6 +101,7 @@ async def get_sync_status():
 
 @router.post("/sync")
 async def start_sync_stream(
+    request: Request,
     years_back: int = Query(5, ge=1, le=20),
     force: bool = Query(False),
 ):
@@ -212,7 +223,7 @@ async def start_sync_stream(
 
             yield sse_event("error", message=f"同步失败: {str(e)}")
 
-    return sse_response(event_generator)
+    return sse_response(sse_guard(request, event_generator()))
 
 
 @router.post("")

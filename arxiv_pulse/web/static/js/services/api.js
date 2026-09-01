@@ -60,7 +60,18 @@ const API = {
         }),
         quick: (params, signal) => fetch(`${API_BASE}/papers/quick?${params}`, { signal }),
         pdf: (arxivId) => fetch(`${API_BASE}/papers/pdf/${arxivId}`),
-        summarize: (id) => fetch(`${API_BASE}/papers/${id}/summarize`, { method: 'POST' })
+        summarize: (id) => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 90000);
+            return fetch(`${API_BASE}/papers/${id}/summarize`, { method: 'POST', signal: ctrl.signal })
+                .finally(() => clearTimeout(timer));
+        },
+        summarizeStream: (id) => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 120000);
+            return fetch(`${API_BASE}/papers/${id}/summarize/stream`, { method: 'POST', signal: ctrl.signal })
+                .finally(() => clearTimeout(timer));
+        }
     },
 
     collections: {

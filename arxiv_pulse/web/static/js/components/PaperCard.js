@@ -20,17 +20,23 @@ const PaperCardTemplate = `
         <span v-if="paper.search_relevance_score" class="paper-meta-item relevance-badge" :title="isZh ? '搜索相关性评分' : 'Search relevance score'">
             🎯 {{ paper.search_relevance_score }}
         </span>
+        <span v-if="paper.is_oa === 'yes'" class="paper-meta-item oa-badge" :title="'Open Access'">{{ isZh ? '开放' : 'OA' }}</span>
+        <span v-else-if="paper.is_oa === 'no' && paper.has_manual_pdf" class="paper-meta-item oa-badge" :title="isZh ? '用户已上传 PDF 获取全文' : 'PDF uploaded by user'">{{ isZh ? '开放' : 'OA' }}</span>
+        <span v-else-if="paper.is_oa === 'no'" class="paper-meta-item oa-badge no-oa" :title="isZh ? '非开放获取' : 'Not Open Access'">{{ isZh ? '闭源' : 'Closed' }}</span>
     </div>
     <div class="paper-category" v-if="categoryExplanation">{{ categoryExplanation }}</div>
-    
-    <div class="abstract-section">
-        <p class="abstract-text" :class="{ 'abstract-collapsed': !expanded }" v-html="renderLatex(paper.abstract)"></p>
+
+    <div class="abstract-section" v-if="paper.abstract || (paper.key_findings && paper.key_findings.length)">
+        <p v-if="paper.abstract" class="abstract-text" :class="{ 'abstract-collapsed': !expanded }" v-html="renderLatex(paper.abstract)"></p>
+        <div v-else class="abstract-text abstract-collapsed" style="color: var(--text-secondary); font-size: 13px;">
+            <div v-for="(f, i) in paper.key_findings.slice(0, 3)" :key="i" style="margin: 3px 0;">• {{ f }}</div>
+        </div>
     </div>
     
     <template v-if="expanded">
         <div v-if="generating" class="ai-generating-hint">
             <span class="ai-generating-spinner"></span>
-            {{ isZh ? 'AI 正在生成总结与图片...' : 'AI is generating summary & figure...' }}
+            {{ paper._summaryStage || (isZh ? '正在处理...' : 'Processing...') }}
         </div>
         <div v-if="paper.abstract_translation" class="translation-section">
             <h4>{{ t('paper.chineseTranslation') }}</h4>
@@ -67,14 +73,18 @@ const PaperCardTemplate = `
         <div v-if="(!paper.key_findings || !paper.key_findings.length) && !paper.methodology && (!paper.keywords || !paper.keywords.length) && !paper.ai_available" style="color: var(--text-muted); font-style: italic; padding: 10px 0;">
             <p>{{ isZh ? '未配置 AI API Key，无法生成总结。请在设置中配置。' : 'AI API Key not configured.' }}</p>
         </div>
+
+        <div v-if="showPdfUploadOffer" class="pdf-manual-offer">
+            <el-button size="small" type="warning" plain @click="uploadPdfForSummary" :loading="uploadingPdf">
+                <el-icon><Upload /></el-icon> {{ t('paper.uploadPdfEnrich') }}
+            </el-button>
+            <span class="pdf-manual-offer-hint">{{ isZh ? '未找到摘要，无法自动生成总结。可手动下载 PDF 上传，获取完整 AI 总结。' : 'No abstract found. Upload the PDF for a full AI summary.' }}</span>
+        </div>
     </template>
     
     <div class="paper-actions">
         <el-button size="small" text type="primary" @click="openArxiv(paper.arxiv_id)">
-            <el-icon><Promotion /></el-icon> {{ sourceLabel }}
-        </el-button>
-        <el-button size="small" text type="primary" @click="downloadPDF(paper.arxiv_id)">
-            <el-icon><Download /></el-icon> {{ t('paper.pdf') }}
+            <el-icon><Promotion /></el-icon> DOI
         </el-button>
         <el-button size="small" text type="primary" @click="downloadCard">
             <el-icon><Picture /></el-icon> {{ t('paper.card') }}
@@ -117,14 +127,25 @@ const PaperCardSetup = (props, { emit }) => {
         if (v === false) generating.value = false;
     });
 
+    // 已总结但只有基础总结（无 findings/methodology）的论文，展开时自动升级为完整总结
+    const needsSummaryUpgrade = computed(() => {
+        const p = props.paper;
+        if (!p.summarized || p.source === 'arxiv') return false;
+        return !p.key_findings || !p.key_findings.length || !p.methodology;
+    });
+
     const toggleExpand = () => {
         const wasExpanded = expanded.value;
         expanded.value = !expanded.value;
 
-        // 展开时按需触发 AI 总结与首图生成（更新流程已不再自动生成）
-        if (!wasExpanded && !props.paper.summarized && !generating.value) {
+        // 展开时按需触发 AI 总结与首图生成（未总结或基础总结的论文都会触发升级）
+        if (!wasExpanded && (!props.paper.summarized || needsSummaryUpgrade.value) && !generating.value) {
             generating.value = true;
             emit('request-summary', props.paper);
+            // 兜底：无论后端起什么原因，120s 后强制停止生成中动效，避免永久转圈
+            setTimeout(() => {
+                generating.value = false;
+            }, 120000);
         }
 
         if (wasExpanded && cardRef.value) {
@@ -134,20 +155,64 @@ const PaperCardSetup = (props, { emit }) => {
         }
     };
 
+    // 仅对非 arXiv 且无有效总结的论文显示「手动上传 PDF 补充总结」
+    const showPdfUploadOffer = computed(() => {
+        const p = props.paper;
+        if (p.source === 'arxiv') return false;
+        if (!p.summarized) return !!p._summaryFailed;  // 总结失败（无摘要）时也显示上传建议
+        if (p._summaryNoAbstract) return true;          // 降级基础总结（无摘要）时提示上传
+        const noFindings = !p.key_findings || !p.key_findings.length;
+        const noMethodology = !p.methodology;
+        return noFindings && noMethodology;
+    });
+
+    const uploadingPdf = ref(false);
+    const uploadPdfForSummary = () => {
+        if (uploadingPdf.value) return;
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.pdf';
+        fileInput.onchange = async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            uploadingPdf.value = true;
+            const p = props.paper;
+            try {
+                const form = new FormData();
+                form.append('pid', p.arxiv_id);
+                form.append('file', file);
+                const res = await fetch('/api/chat/pdf/upload', { method: 'POST', body: form });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || 'upload failed');
+                // 上传成功：触发重新总结（会命中刚存的全文缓存）
+                generating.value = true;
+                try {
+                    const sumRes = await fetch(`/api/papers/${p.id}/summarize`, { method: 'POST' });
+                    if (sumRes.ok) {
+                        const sumData = await sumRes.json();
+                        if (sumData.paper) Object.assign(p, sumData.paper);
+                    }
+                } finally {
+                    generating.value = false;
+                }
+                const msg = isZh.value
+                    ? 'PDF 已上传并生成完整总结'
+                    : 'PDF uploaded, full summary generated';
+                ElementPlus.ElMessage.success(msg);
+            } catch (e) {
+                console.error('上传 PDF 失败:', e);
+                ElementPlus.ElMessage.error(isZh.value ? '上传失败: ' + e.message : 'Upload failed: ' + e.message);
+            } finally {
+                uploadingPdf.value = false;
+            }
+        };
+        fileInput.click();
+    };
+
     const onFigureError = (e) => {
         if (e && e.target) e.target.style.display = 'none';
     };
 
-    const sourceLabel = computed(() => {
-        const p = props.paper;
-        if (p.source === 'doi') {
-            if (p.categories === 'IEEE TGRS') return 'TGRS';
-            if (p.categories === 'Science') return 'Science';
-            return 'DOI';
-        }
-        return t('paper.arxiv');
-    });
-    
     const formatDate = (dateStr) => {
         if (!dateStr) return '';
         return new Date(dateStr).toLocaleDateString('zh-CN');
@@ -243,15 +308,6 @@ const PaperCardSetup = (props, { emit }) => {
         window.open(`https://arxiv.org/abs/${arxivId}`, '_blank');
     };
 
-    const downloadPDF = (arxivId) => {
-        const paper = props.paper || {};
-        if (paper.source === 'doi') {
-            window.open(paper.pdf_url || `https://doi.org/${arxivId}`, '_blank');
-            return;
-        }
-        window.open(`https://arxiv.org/pdf/${arxivId}.pdf`, '_blank');
-    };
-    
     const openImage = (url) => {
         window.open(url, '_blank');
     };
@@ -402,7 +458,7 @@ const PaperCardSetup = (props, { emit }) => {
         
         elements.push({ type: 'text', text: `${props.paper.source === 'doi' ? 'DOI' : 'arXiv'}: ${props.paper.arxiv_id}`, font: `${12 * scale}px sans-serif`, color: '#909399', y: y });
         y += 24 * scale;
-        elements.push({ type: 'text', text: 'ATS Pulse', font: `bold ${13 * scale}px Georgia, serif`, color: '#c9a227', y: y });
+        elements.push({ type: 'text', text: 'PaperFlow', font: `bold ${13 * scale}px Georgia, serif`, color: '#c9a227', y: y });
         y += 14 * scale;
         elements.push({ type: 'text', text: 'github.com/kYangLi/arXiv-Pulse', font: `${10 * scale}px sans-serif`, color: '#b0b0b0', y: y });
         
@@ -461,5 +517,5 @@ const PaperCardSetup = (props, { emit }) => {
         return props.paper.category_explanation_en || props.paper.category_explanation || '';
     });
     
-    return { expanded, generating, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, downloadPDF, openImage, downloadCard, analyzePaper, onFigureError, t, isZh, categoryExplanation, sourceLabel };
+    return { expanded, generating, cardRef, toggleExpand, formatDate, formatSummary, renderLatex, openArxiv, openImage, downloadCard, analyzePaper, onFigureError, t, isZh, categoryExplanation, showPdfUploadOffer, uploadPdfForSummary, uploadingPdf };
 };

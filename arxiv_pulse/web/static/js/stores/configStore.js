@@ -48,7 +48,7 @@ const useConfigStore = defineStore('config', () => {
     const tempSelectedFields = ref([]);
     const fieldSearchQuery = ref('');
     const fieldSelectorExpanded = ref({});
-    const recentCategories = ref(['cs.CV']);
+    const recentCategories = ref([]);
     const fieldAdvancedMode = ref(false);
     const advancedQueriesText = ref('');
     
@@ -201,7 +201,7 @@ const useConfigStore = defineStore('config', () => {
                 s2_api_key: data.s2_api_key || '',
                 ai_model: data.ai_model || 'DeepSeek-V3.2',
                 ai_base_url: data.ai_base_url || 'https://llmapi.paratera.com',
-                selected_fields: data.selected_fields || [],
+                selected_fields: (data.selected_fields && data.selected_fields.length) ? data.selected_fields : ['cs.CV'],
                 search_queries: data.search_queries || [],
                 years_back: data.years_back || 5,
                 arxiv_max_results: data.arxiv_max_results || 100000,

@@ -28,6 +28,7 @@ class Paper(Base):
     summarized = Column(Boolean, default=False)
     summary = Column(Text)
     source = Column(String(20), default="arxiv")
+    is_oa = Column(String(10))  # 'yes' / 'no' / None；OpenAlex open_access.is_oa
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -53,6 +54,7 @@ class Paper(Base):
             "summarized": self.summarized,
             "summary": self.summary,
             "source": self.source or "arxiv",
+            "is_oa": self.is_oa,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -33,6 +33,7 @@ class ChatMessage(Base):
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     paper_ids = Column(Text)
+    images = Column(Text)  # JSON 数组: data URI，多模态消息
     created_at = Column(DateTime, default=utcnow)
 
     def to_dict(self):
@@ -42,6 +43,7 @@ class ChatMessage(Base):
             "role": self.role,
             "content": self.content,
             "paper_ids": json.loads(self.paper_ids) if self.paper_ids else [],
+            "images": json.loads(self.images) if self.images else [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

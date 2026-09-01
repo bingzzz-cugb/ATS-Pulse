@@ -183,6 +183,12 @@ const ChatWidgetTemplate = `
                         </el-button>
                     </div>
                     
+                    <div v-if="chatPasteImages.length" class="chat-paste-images">
+                        <div v-for="(img, i) in chatPasteImages" :key="i" class="chat-paste-img">
+                            <img :src="img" />
+                            <span class="chat-paste-img-x" @click="removeChatPasteImage(i)">×</span>
+                        </div>
+                    </div>
                     <div class="chat-input-area">
                         <el-button text @click.stop="showChatSidebar = !showChatSidebar" :title="t('chat.history')" class="history-btn">
                             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
@@ -195,10 +201,11 @@ const ChatWidgetTemplate = `
                             :autosize="{ minRows: 1, maxRows: 4 }"
                             :placeholder="t('chat.inputPlaceholder')"
                             @keydown.enter.exact.prevent="sendChatMessage"
+                            @paste="handleChatPaste"
                             :disabled="chatTyping"
                             resize="none"
                         />
-                        <el-button type="primary" @click="sendChatMessage" :loading="chatTyping" :disabled="!chatInput.trim()" class="send-btn">
+                        <el-button type="primary" @click="sendChatMessage" :loading="chatTyping" :disabled="!chatInput.trim() && !chatPasteImages.length" class="send-btn">
                             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
                             </svg>
@@ -224,13 +231,15 @@ const ChatWidgetSetup = (props, { emit }) => {
     
     const {
         chatSessions, currentChatSession, chatMessages, chatInput,
+        chatPasteImages,
         selectedChatPapers, chatTyping, chatProgress, showChatSidebar,
         chatMessagesContainer, quickPrompts
     } = storeToRefs(chatStore);
-    
+
     const {
         createNewChat, selectChatSession, deleteChatSession, clearAllChatSessions,
         sendChatMessage, sendQuickPrompt, removeSelectedChatPaper,
+        handleChatPaste, removeChatPasteImage,
         compactCurrentSession,
         formatChatMessage, formatChatTime, handleChatScroll,
         copyMessage, regenerateMessage
@@ -320,9 +329,11 @@ const ChatWidgetSetup = (props, { emit }) => {
 
     return {
         showChatSidebar, chatSessions, currentChatSession, chatMessages, chatInput,
+        chatPasteImages,
         selectedChatPapers, chatTyping, chatProgress, chatMessagesContainer, quickPrompts,
         t, createNewChat, selectChatSession, deleteChatSession, clearAllChatSessions,
         sendChatMessage, sendQuickPrompt, removeSelectedChatPaper, compactCurrentSession,
+        handleChatPaste, removeChatPasteImage,
         formatChatMessage, formatChatTime, handleChatScroll,
         copyMessage, regenerateMessage,
         onMouseDown, toggleFullscreen, onResizeStart,

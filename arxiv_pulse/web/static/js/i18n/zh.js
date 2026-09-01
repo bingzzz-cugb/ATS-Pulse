@@ -26,13 +26,13 @@ const i18nZh = {
         back: '上一步'
     },
     home: {
-        title: 'ATS Pulse',
-        subtitle: '智能学术文献追踪与分析系统',
-        searchPlaceholder: '输入 arXiv ID、关键词或自然语言描述搜索论文...',
+        title: 'PaperFlow',
+        subtitle: '无限进步',
+        searchPlaceholder: '支持标题、arxiv id、关键词、DOI',
         searchBtn: '搜索',
-        hints: '支持 arXiv ID 或 URL 精准搜索；支持自然语言搜索，如"机器学习在材料设计中的应用"',
+        hints: '文献获取、分析、总结和学习一站式平台',
         recentPapers: '近期论文',
-        syncManage: '同步管理',
+        syncManage: '数据管理',
         paperCollections: '论文集',
         totalPapers: '篇论文',
         totalCollections: '个论文集',
@@ -76,6 +76,7 @@ const i18nZh = {
     sync: {
         status: '同步状态',
         lastSync: '上次同步',
+        lastUpdate: '上次更新',
         researchFields: '研究领域',
         totalPapers: '总论文数',
         syncSettings: '同步设置',
@@ -84,9 +85,10 @@ const i18nZh = {
         startSync: '开始同步',
         yearsBack: '回溯年数',
         yearDistribution: '文献年份分布',
-        categoryDistribution: '热门领域研究',
+        categoryDistribution: '热门研究领域',
         noCache: '无缓存',
         neverSynced: '从未同步',
+        neverUpdated: '还未更新过',
         completed: '已完成',
         inProgress: '进行中'
     },
@@ -205,14 +207,15 @@ const i18nZh = {
         profileSourcesShort: '个来源'
     },
     setup: {
-        welcome: '欢迎使用 ATS Pulse',
+        welcome: '欢迎使用 PaperFlow',
         step: '步骤',
         aiConfig: '配置 AI',
-        selectFields: '选择研究领域',
+        selectFields: '细化研究方向（方便文献搜索时按领域过滤）',
         syncSettings: '同步设置',
         startSync: '开始同步',
         apiHint: '配置 AI 以启用智能总结和翻译功能',
-        fieldsHint: '选择您感兴趣的研究领域',
+        fieldsHint: '1、先选择arxiv研究领域（平台会按照你的领域过滤arxiv文章）',
+        profilesHint: '2、建立你自己的研究领域档案',
         syncHint: '设置同步参数',
         syncBtn: '开始同步',
         yearsBack: '默认同步年份',
@@ -277,7 +280,8 @@ const i18nZh = {
         original: '原文',
         openExternal: '新标签打开',
         openArxiv: '在 arXiv 打开',
-        noSelection: '请先在论文列表中选中论文'
+        noSelection: '请先在论文列表中选中论文',
+        uploadPdfEnrich: '上传 PDF 生成完整总结'
     },
     pdf: {
         loading: 'PDF 加载中...',

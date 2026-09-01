@@ -4,6 +4,7 @@ const useChatStore = defineStore('chat', () => {
     const currentChatSession = ref(null);
     const chatMessages = ref([]);
     const chatInput = ref('');
+    const chatPasteImages = ref([]);  // data URI 数组，粘贴图片
     const selectedChatPapers = ref([]);
     const chatTyping = ref(false);
     const chatProgress = ref(null);
@@ -173,33 +174,36 @@ const useChatStore = defineStore('chat', () => {
     
     async function sendChatMessage() {
         const configStore = useConfigStore();
-        if (!chatInput.value.trim() || chatTyping.value) return;
-        
+        if ((!chatInput.value.trim() && !chatPasteImages.value.length) || chatTyping.value) return;
+
         if (!currentChatSession.value) {
             await createNewChat();
             if (!currentChatSession.value) return;
         }
-        
+
+        const imagesToSend = chatPasteImages.value.slice();
         const userMessage = {
             id: Date.now(),
             role: 'user',
             content: chatInput.value,
             paper_ids: selectedChatPapers.value.map(p => p.arxiv_id),
+            images: imagesToSend,
             created_at: new Date().toISOString()
         };
         chatMessages.value.push(userMessage);
-        
+
         const messageContent = chatInput.value;
         const paperIds = selectedChatPapers.value.map(p => p.arxiv_id);
         chatInput.value = '';
+        chatPasteImages.value = [];
         selectedChatPapers.value = [];
         chatTyping.value = true;
         chatProgress.value = null;
         userScrolledUp.value = false;
-        
+
         await nextTick();
         scrollToBottom();
-        
+
         const assistantMessage = {
             id: Date.now() + 1,
             role: 'assistant',
@@ -209,12 +213,13 @@ const useChatStore = defineStore('chat', () => {
         };
         chatMessages.value.push(assistantMessage);
         const assistantIdx = chatMessages.value.length - 1;
-        
+
         try {
             const response = await API.chat.sessions.send(currentChatSession.value.id, {
                 content: messageContent,
                 paper_ids: paperIds,
-                language: configStore.currentLang
+                language: configStore.currentLang,
+                images: imagesToSend
             });
             
             const reader = response.body.getReader();
@@ -521,8 +526,36 @@ const useChatStore = defineStore('chat', () => {
         return date.toLocaleDateString();
     }
     
+    async function handleChatPaste(e) {
+        const items = (e.clipboardData || {}).items || [];
+        for (const item of items) {
+            if (!item.type.startsWith('image/')) continue;
+            const file = item.getAsFile();
+            if (!file) continue;
+            const readResult = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result instanceof ArrayBuffer
+                    ? null
+                    : reader.result);
+                reader.onerror = () => resolve(null);
+                reader.readAsDataURL(file);
+            });
+            if (readResult) {
+                chatPasteImages.value.push(readResult);
+                if (chatPasteImages.value.length > 5) {
+                    chatPasteImages.value.splice(0, chatPasteImages.value.length - 5);
+                }
+            }
+        }
+    }
+
+    function removeChatPasteImage(idx) {
+        chatPasteImages.value.splice(idx, 1);
+    }
+
     return {
         chatExpanded, chatSessions, currentChatSession, chatMessages, chatInput,
+        chatPasteImages,
         selectedChatPapers, chatTyping, chatProgress, showChatSidebar,
         chatUnreadCount, chatMessagesContainer, userScrolledUp, chatPosition,
         chatPanelRef, chatZIndex, chatFullscreen, chatSize, chatAnimating,
@@ -530,6 +563,7 @@ const useChatStore = defineStore('chat', () => {
         scrollToBottom, handleChatScroll, fetchChatSessions, createNewChat,
         selectChatSession, deleteChatSession, clearAllChatSessions,
         sendQuickPrompt, sendChatMessage, removeSelectedChatPaper,
+        handleChatPaste, removeChatPasteImage,
         compactCurrentSession,
         formatChatMessage, formatChatTime, copyMessage, regenerateMessage
     };
